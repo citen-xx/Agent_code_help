@@ -9,15 +9,16 @@ Pipeline::
               |            |
               +---- no ----+--> END (final answer)
 
-The agent calls the LLM (with repository inspection and controlled test
-tools bound); tool results are appended to ``messages`` and the loop repeats
-until the LLM answers without tool calls, an error occurs, or the maximum
-step count is reached.
+The agent calls the LLM with repository inspection, atomic patch, and
+controlled test tools bound; tool results are appended to ``messages`` and
+the loop repeats until the LLM answers without tool calls, an error occurs,
+the repair limit is reached, or the maximum step count is reached.
 
 Only hand-written nodes and edges are used — no high-level agent APIs.
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Literal
@@ -38,24 +39,29 @@ from app.llm.client import build_chat_model
 from app.schemas.agent import AnalyzeResponse
 from app.tools.build_tools import create_build_tools
 from app.tools.git_tools import create_git_tools
+from app.tools.patch_tools import create_patch_tools
 from app.tools.registry import create_repo_tools
+from app.workspace import git
+from app.workspace.models import TestRunResult
+from app.workspace.patch import MAX_PATCH_DIFF_CHARS
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_STEPS = 10
+DEFAULT_MAX_STEPS = 20
+MAX_REPAIR_ROUNDS = 3
 #: Safety cap for a whole agent run (single LLM calls have their own timeout).
 DEFAULT_RUN_TIMEOUT_SECONDS = 300.0
 
 SYSTEM_PROMPT = (
-    "You are a Java code analysis assistant. You can inspect a Java repository "
-    "and run its fixed tests. Available tools: list_files, read_file, search_code, and (for a "
-    "workspace) git_status, git_diff, git_log, git_show, detect_build_tools, "
-    "run_tests. run_tests executes only the fixed Maven/Gradle test lifecycle. "
-    "Never modify or delete files, and never run shell commands. "
-    "When tests fail, inspect the reported output and relevant source files "
-    "before explaining the likely cause. "
-    "Explore step by step, then give a concise final answer once you have "
-    "enough information. Answer in the same language as the user's task."
+    "You are a Java coding assistant working inside one isolated workspace. "
+    "For a code change, follow this order: locate the problem, read the relevant "
+    "code, use apply_patch to edit existing UTF-8 files, run Maven tests with "
+    "run_tests(tool='maven'), inspect failures, and patch again when needed. "
+    "apply_patch requires exact old_text/new_text replacements and is atomic. "
+    "Never modify files outside apply_patch, never run shell commands, and never "
+    "invent Maven arguments. At most three repair patches are allowed after the "
+    "first failed test. When tests pass, summarize the change and mention the "
+    "test result and diff. Answer in the same language as the user's task."
 )
 
 
@@ -99,22 +105,61 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
         """Execute the pending tool calls; errors become tool messages."""
         last = state["messages"][-1]
         tool_messages: list[ToolMessage] = []
+        modified_files: list[str] = []
+        latest_test: TestRunResult | None = state.get("test_result")
+        has_seen_test_failure = state.get("has_seen_test_failure", False)
+        repair_rounds = state.get("repair_rounds", 0)
         for call in getattr(last, "tool_calls", None) or []:
             name = call.get("name")
             args = call.get("args") or {}
             call_id = call.get("id")
             tool = tools_by_name.get(name)
+            invocation_succeeded = False
             if tool is None:
                 content = f"[tool error] 未知工具：{name}（可用工具：{', '.join(sorted(tools_by_name))}）"
+            elif (
+                name == "apply_patch"
+                and has_seen_test_failure
+                and repair_rounds >= MAX_REPAIR_ROUNDS
+            ):
+                content = (
+                    f"[tool error] 已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复上限，"
+                    "禁止继续 apply_patch。请基于现有 diff 和测试结果给出最终说明。"
+                )
             else:
                 try:
                     content = str(tool.invoke(args))
+                    invocation_succeeded = True
                 except Exception as exc:
                     logger.exception("Tool %s failed", name)
                     content = f"[tool error] 工具 {name} 执行失败：{exc}"
+
+            if invocation_succeeded and name == "apply_patch":
+                try:
+                    patch_body = json.loads(content)
+                    affected = patch_body.get("affected_files") or []
+                    modified_files.extend(str(path) for path in affected)
+                    if has_seen_test_failure:
+                        repair_rounds += 1
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    logger.warning("Could not parse apply_patch result: %s", content[:500])
+            elif invocation_succeeded and name == "run_tests":
+                try:
+                    latest_test = TestRunResult.model_validate_json(content)
+                    if not latest_test.success:
+                        has_seen_test_failure = True
+                except ValueError:
+                    logger.warning("Could not parse run_tests result: %s", content[:500])
             tool_messages.append(ToolMessage(content=content, tool_call_id=call_id))
         logger.info("Executed %d tool call(s) (step %d)", len(tool_messages), state["step_count"])
-        return {"messages": tool_messages, "current_step": "tools"}
+        return {
+            "messages": tool_messages,
+            "current_step": "tools",
+            "modified_files": modified_files,
+            "test_result": latest_test,
+            "has_seen_test_failure": has_seen_test_failure,
+            "repair_rounds": repair_rounds,
+        }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
         if state.get("current_step") in ("error", "finished"):
@@ -144,15 +189,20 @@ async def run_agent(
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
-    The Agent never edits source files. In workspace mode it may execute the
-    fixed Maven/Gradle test lifecycle. The LLM is injected (tests pass a fake);
-    when omitted it is built from settings, which requires LLM_* in .env.
+    In workspace mode the Agent can make atomic patches and execute the fixed
+    Maven/Gradle test lifecycle. The LLM is injected (tests pass a fake); when
+    omitted it is built from settings, which requires LLM_* in .env.
     """
     model = model or build_chat_model()
     tools = create_repo_tools(repository_path)
     if workspace_id:
-        # Git and build/test tools are bound to this workspace's repository only.
+        # All mutating and execution tools are bound to this workspace only.
         tools += create_git_tools(workspace_id, repository_path, manager=workspace_manager)
+        tools += create_patch_tools(
+            workspace_id,
+            repository_path,
+            manager=workspace_manager,
+        )
         tools += create_build_tools(
             workspace_id,
             repository_path,
@@ -167,6 +217,10 @@ async def run_agent(
         "current_step": "init",
         "step_count": 0,
         "final_answer": "",
+        "modified_files": [],
+        "test_result": None,
+        "has_seen_test_failure": False,
+        "repair_rounds": 0,
     }
 
     logger.info("Agent run started (repo=%s, max_steps=%d)", repository_path, max_steps)
@@ -182,5 +236,52 @@ async def run_agent(
         logger.exception("Agent run crashed")
         return AnalyzeResponse(answer=f"Agent 执行异常：{exc}", steps=0)
 
-    logger.info("Agent run finished (steps=%d, step=%s)", result["step_count"], result["current_step"])
-    return AnalyzeResponse(answer=result["final_answer"], steps=result["step_count"])
+    modified_files = list(dict.fromkeys(result.get("modified_files", [])))
+    latest_test = result.get("test_result")
+    final_diff = ""
+    if workspace_id and modified_files:
+        try:
+            final_diff = git.diff(Path(repository_path))
+        except git.GitError as exc:
+            final_diff = f"[无法获取 git diff: {exc}]"
+        if len(final_diff) > MAX_PATCH_DIFF_CHARS:
+            omitted = len(final_diff) - MAX_PATCH_DIFF_CHARS
+            final_diff = (
+                final_diff[:MAX_PATCH_DIFF_CHARS]
+                + f"\n...[git diff 已截断，省略 {omitted} 个字符]"
+            )
+
+    final_answer = result["final_answer"]
+    if workspace_id and (modified_files or latest_test):
+        report: list[str] = [final_answer, "", "### 修改摘要"]
+        report.extend(f"- {path}" for path in modified_files)
+        if not modified_files:
+            report.append("- 无文件修改")
+        report.extend(["", "### 测试结果"])
+        if latest_test is None:
+            report.append("- 未运行测试")
+        else:
+            report.append("- 状态：" + ("通过" if latest_test.success else "失败"))
+            report.append(f"- 退出码：{latest_test.exit_code}")
+            report.append(f"- 耗时：{latest_test.duration_seconds}s")
+            if latest_test.error:
+                report.append(f"- 错误：{latest_test.error}")
+        if final_diff:
+            report.extend(["", "### 最终 Diff", "```diff", final_diff, "```"])
+        final_answer = "\n".join(report)
+
+    logger.info(
+        "Agent run finished (steps=%d, step=%s, modified=%d, repairs=%d)",
+        result["step_count"],
+        result["current_step"],
+        len(modified_files),
+        result.get("repair_rounds", 0),
+    )
+    return AnalyzeResponse(
+        answer=final_answer,
+        steps=result["step_count"],
+        modified_files=modified_files,
+        repair_rounds=result.get("repair_rounds", 0),
+        test_result=latest_test,
+        diff=final_diff,
+    )

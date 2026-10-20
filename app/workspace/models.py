@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkspaceStatus(StrEnum):
@@ -42,6 +42,37 @@ class TestRunResult(BaseModel):
     truncated: bool = Field(default=False, description="Whether stdout or stderr was truncated.")
     error: str | None = Field(default=None, description="Execution error, if any.")
     duration_seconds: float = Field(ge=0, description="Wall-clock execution time.")
+
+
+class PatchChange(BaseModel):
+    """One exact text replacement inside a repository file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1, max_length=512, description="Repository-relative file path.")
+    old_text: str = Field(min_length=1, max_length=200_000, description="Existing text to replace.")
+    new_text: str = Field(max_length=200_000, description="Replacement text.")
+
+
+class ApplyPatchRequest(BaseModel):
+    """Atomic set of exact text replacements."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    changes: list[PatchChange] = Field(
+        min_length=1,
+        max_length=20,
+        description="Changes applied atomically; each path may appear once.",
+    )
+
+
+class PatchResult(BaseModel):
+    """Result of a successful atomic patch."""
+
+    success: bool = True
+    affected_files: list[str] = Field(default_factory=list)
+    diff: str = ""
+    diff_truncated: bool = False
 
 
 class WorkspaceInfo(BaseModel):

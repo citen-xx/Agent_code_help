@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.workspace.models import TestRunResult
+
 
 class AnalyzeRequest(BaseModel):
     """Request body of ``POST /agent/analyze``.
@@ -30,3 +32,20 @@ class AnalyzeResponse(BaseModel):
 
     answer: str = Field(description="The agent's final answer.")
     steps: int = Field(ge=0, description="Number of LLM iterations executed.")
+    modified_files: list[str] = Field(
+        default_factory=list,
+        description="Files changed by the Agent in this run.",
+    )
+    repair_rounds: int = Field(
+        default=0,
+        ge=0,
+        description="Patch attempts made after a failed test.",
+    )
+    test_result: TestRunResult | None = Field(
+        default=None,
+        description="Latest controlled Maven/Gradle test result.",
+    )
+    diff: str = Field(
+        default="",
+        description="Current uncommitted diff after the Agent run.",
+    )

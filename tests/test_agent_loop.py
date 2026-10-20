@@ -53,6 +53,31 @@ async def test_tool_exception_is_fed_back(repo):
     assert "Missing.java" in tool_msg.content
 
 
+async def test_legacy_repository_mode_has_no_patch_tool(repo):
+    original = (repo / "Main.java").read_text(encoding="utf-8")
+    model = FakeChatModel(script=[
+        tool_call(
+            "apply_patch",
+            {
+                "changes": [
+                    {
+                        "path": "Main.java",
+                        "old_text": "public class Main {}",
+                        "new_text": "public class Main { int changed; }",
+                    }
+                ]
+            },
+            "call_patch",
+        ),
+        AIMessage(content="仓库路径模式不允许修改。"),
+    ])
+    result = await run_agent("修改项目", repo, model=model)
+    assert result.steps == 2
+    tool_msg = [m for m in model.history[1] if isinstance(m, ToolMessage)][0]
+    assert "未知工具" in tool_msg.content
+    assert (repo / "Main.java").read_text(encoding="utf-8") == original
+
+
 async def test_max_steps_terminates_safely(repo):
     model = FakeChatModel(script=[tool_call("list_files", {"path": "."}, f"call_{i}") for i in range(20)])
     result = await run_agent("分析项目", repo, model=model, max_steps=3)

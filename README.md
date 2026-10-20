@@ -9,17 +9,19 @@
 
 ## 当前阶段
 
-第四阶段：Maven / Gradle 受控执行与测试反馈：
+第五阶段：安全代码修改与 Maven 测试闭环：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
 - 构建系统识别：仅检查 Workspace 根目录的 Maven `pom.xml` 或 Gradle 构建文件
 - 受控测试执行：固定执行 Maven/Gradle 的 `test`，返回 exit code、stdout、stderr、超时和截断信息
 - Agent 工具：`detect_build_tools`、`run_tests`，失败输出会反馈给 LLM 用于定位原因
+- 原子代码修改：`apply_patch` 只修改绑定 Workspace 内已存在的 UTF-8 文本文件，失败自动回滚
+- Maven 修复闭环：定位 → 读取 → 修改 → 测试 → 分析失败 → 再修改，测试失败后最多允许 3 轮修复 Patch
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：修改/删除代码、任意 Shell、任意 Maven/Gradle 参数、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。
+仍然禁止：任意 Shell、任意 Maven/Gradle 参数、文件创建/删除、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
 
 ## 推荐流程
 
@@ -62,7 +64,8 @@ java-code-agent/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
 │  │  ├─ registry.py       # 仓库工具 LangChain 封装
 │  │  ├─ git_tools.py      # 只读 Git 工具（status/diff/log/show）
-│  │  └─ build_tools.py    # 构建检测与测试执行工具
+│  │  ├─ build_tools.py    # 构建检测与测试执行工具
+│  │  └─ patch_tools.py    # Workspace 绑定的原子 apply_patch
 │  └─ schemas/
 │     ├─ common.py         # 通用 Pydantic 模型
 │     ├─ agent.py          # /agent/analyze 请求/响应模型
@@ -207,6 +210,38 @@ curl -X POST http://127.0.0.1:8000/agent/analyze \
 workspace 模式下 Agent 额外拥有 4 个只读 Git 工具（git_status / git_diff / git_log / git_show）。
 如果 Workspace 状态不是 `ready`，接口返回 409，不会启动 Agent。
 
+### Agent 代码修改闭环
+
+Workspace 模式下 Agent 可以调用 `apply_patch`，输入为结构化精确替换：
+
+```json
+{
+  "changes": [
+    {
+      "path": "src/main/java/example/Calculator.java",
+      "old_text": "return left - right;",
+      "new_text": "return left + right;"
+    }
+  ]
+}
+```
+
+约束：
+
+- `path` 必须是 repository 相对路径，且目标文件必须已经存在。
+- `old_text` 必须在目标文件中恰好出现一次。
+- 一次可以修改多个文件，但同一路径只能出现一次。
+- 所有校验完成后才提交；任一步失败会恢复已替换文件。
+- 返回 `affected_files`、当前 `git diff` 和是否截断。
+- 测试失败后最多允许 3 次修复 Patch；超过后 Graph 会拒绝继续修改。
+
+最终 `/agent/analyze` 响应新增：
+
+- `modified_files`：本次成功修改的文件
+- `repair_rounds`：测试失败后执行的修复 Patch 次数
+- `test_result`：最近一次测试的结构化结果
+- `diff`：运行结束时的 Git Diff
+
 ### 运行测试
 
 Agent 在 Workspace 模式下可以调用：
@@ -254,6 +289,8 @@ curl -X POST http://127.0.0.1:8000/agent/analyze \
 - 测试进程在 Workspace repository 目录启动，使用 `shell=False`、非交互 stdin 和超时；超时会尝试终止整个进程树
 - stdout / stderr 各自最多保留 20,000 字符，超出时明确标记；测试超时默认 300 秒，可通过 `BUILD_TEST_TIMEOUT_SECONDS` 调整
 - Maven/Gradle 测试会执行仓库中的构建脚本和测试代码，这是该阶段的既定能力；当前没有容器级隔离，只应分析受信任的公开仓库
+- `apply_patch` 拒绝绝对路径、`..` 路径穿越、`.git` 目录、符号链接组件、硬链接、二进制文件、非 UTF-8 文件和超过 2 MiB 的文件
+- `apply_patch`、`run_tests` 和 Git 工具都不会暴露 workspace 路径参数，全部由服务端按 `workspace_id` 绑定
 
 ## 运行测试
 
@@ -267,10 +304,10 @@ uv run pytest
 
 ```bash
 uv run python scripts/acceptance_build.py
+uv run python scripts/acceptance_patch_loop.py
 ```
 
 ## 后续计划
 
-- 代码修改 + 测试闭环（`apply_patch` 类受控编辑）
 - Tree-sitter 语法级代码分析
 - 持久化、检索等基础设施（按需逐步加入）

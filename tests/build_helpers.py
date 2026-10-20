@@ -37,3 +37,24 @@ def patch_popen(
 
     monkeypatch.setattr("app.workspace.build._POPEN", fake_popen)
     return captured
+
+
+def patch_popen_sequence(
+    monkeypatch,
+    results: list[dict],
+) -> list[dict]:
+    """Patch Popen with a sequence of stdout/stderr/returncode results."""
+    captured: list[dict] = []
+
+    def fake_popen(command, **kwargs):
+        index = len(captured)
+        result = results[min(index, len(results) - 1)]
+        captured.append({"command": command, "kwargs": kwargs})
+        return FakeProcess(
+            stdout=result.get("stdout", ""),
+            stderr=result.get("stderr", ""),
+            returncode=result.get("returncode", 0),
+        )
+
+    monkeypatch.setattr("app.workspace.build._POPEN", fake_popen)
+    return captured

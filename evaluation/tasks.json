@@ -1,0 +1,144 @@
+[
+  {
+    "task_id": "arithmetic-logic",
+    "title": "Arithmetic logic error",
+    "description": "Order arithmetic helper returns the wrong sum.",
+    "repository": "evaluation/fixtures/arithmetic-logic/repo.bundle",
+    "base_commit": "9c505bf9c30c043e3b008f24a978a58fc69c50c8",
+    "problem_statement": "订单金额的加法计算不正确。请定位并修复实现，确保现有 Maven 测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "arithmetic",
+      "simple"
+    ]
+  },
+  {
+    "task_id": "condition-boundary",
+    "title": "Condition boundary error",
+    "description": "Free shipping policy uses the wrong threshold and premium condition.",
+    "repository": "evaluation/fixtures/condition-boundary/repo.bundle",
+    "base_commit": "9d87c2f49db04ab7df87951eda6f83402621e738",
+    "problem_statement": "免运费判断在普通大额订单和会员订单上不正确。请修复条件逻辑并确保测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "condition",
+      "business-rule"
+    ]
+  },
+  {
+    "task_id": "null-handling",
+    "title": "Null handling error",
+    "description": "Display-name formatter throws on null and blank names.",
+    "repository": "evaluation/fixtures/null-handling/repo.bundle",
+    "base_commit": "6e9d695f1f08b9c1f35b773e2222988ee327d741",
+    "problem_statement": "用户显示名称在空值或空白输入时会失败。请修复空值处理并保持正常名称的格式。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "null-safety",
+      "input-validation"
+    ]
+  },
+  {
+    "task_id": "collection-processing",
+    "title": "Collection processing error",
+    "description": "Order total skips the first collection element.",
+    "repository": "evaluation/fixtures/collection-processing/repo.bundle",
+    "base_commit": "34c873a71aec693f5b5b7e66c636d9efc7e3307a",
+    "problem_statement": "订单集合汇总少计算了第一个价格。请修复集合遍历逻辑并确保空集合和普通集合测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "collection",
+      "loop"
+    ]
+  },
+  {
+    "task_id": "string-processing",
+    "title": "String processing error",
+    "description": "Slug creation fails to trim and normalize separators.",
+    "repository": "evaluation/fixtures/string-processing/repo.bundle",
+    "base_commit": "57fc42c6899feb9a0218141d7da00e198cf1845e",
+    "problem_statement": "文章 slug 生成结果保留了空格和大小写，格式不正确。请修复字符串处理实现并确保测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "string",
+      "formatting"
+    ]
+  },
+  {
+    "task_id": "off-by-one",
+    "title": "Off-by-one paging error",
+    "description": "Last page count truncates partial pages.",
+    "repository": "evaluation/fixtures/off-by-one/repo.bundle",
+    "base_commit": "b24e4688bcb1154e6a6e82600a4726ce8efa3095",
+    "problem_statement": "分页结果少算了一页，包含不完整尾页时总页数不正确。请修复边界计算并确保分页测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "off-by-one",
+      "pagination"
+    ]
+  },
+  {
+    "task_id": "service-business-logic",
+    "title": "Service business logic error",
+    "description": "Inventory reservation returns the wrong remaining quantity.",
+    "repository": "evaluation/fixtures/service-business-logic/repo.bundle",
+    "base_commit": "439e28ac00d367a15ab62853c053f97b8e4bfe46",
+    "problem_statement": "库存预占后剩余数量不正确，且边界库存可能判断错误。请修复服务层业务逻辑并确保测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "service",
+      "business-rule"
+    ]
+  },
+  {
+    "task_id": "multi-file-call-graph",
+    "title": "Multi-file business calculation error",
+    "description": "OrderService delegates through PriceService to a broken Calculator.",
+    "repository": "evaluation/fixtures/multi-file-call-graph/repo.bundle",
+    "base_commit": "34cffe18c241a2007fb591a73246d36ec1707d81",
+    "problem_statement": "订单价格经过 Service 调用链后计算结果错误。请定位多文件调用链中的缺陷并修复，使 Maven 测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "multi-file",
+      "call-graph",
+      "service"
+    ]
+  },
+  {
+    "task_id": "overloaded-method",
+    "title": "Overloaded method error",
+    "description": "The numeric overload of format applies the wrong transformation.",
+    "repository": "evaluation/fixtures/overloaded-method/repo.bundle",
+    "base_commit": "7fb98dbb5b4d92bee77f59862c38806a29eade08",
+    "problem_statement": "格式化器的数字重载输出错误，而字符串重载应保持正常。请修复正确的方法实现并确保测试通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "overload",
+      "method"
+    ]
+  },
+  {
+    "task_id": "regression-conflict",
+    "title": "Regression-sensitive text normalization",
+    "description": "Text normalization trims and changes case incorrectly.",
+    "repository": "evaluation/fixtures/regression-conflict/repo.bundle",
+    "base_commit": "0687da66a00808739c5eab441ef31c157fc51f2f",
+    "problem_statement": "文本标准化同时破坏了大小写和外部空白。请修复实现，确保多个现有行为测试都通过。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "string",
+      "regression",
+      "multi-assertion"
+    ]
+  }
+]

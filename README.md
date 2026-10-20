@@ -9,7 +9,7 @@
 
 ## 当前阶段
 
-第九阶段：Repair Planner（结构化修复计划编排）：
+第十阶段：可重复运行的 Evaluation / Benchmark：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
@@ -24,6 +24,8 @@
 - Impact 分析：从类或方法出发，默认分析 1 层、最多 2 层调用方，并返回测试代码引用和同类相关方法
 - Repair Planner：首次 Patch 前必须生成结构化计划；Maven 失败后必须修订计划再进入下一轮
 - 最终响应：返回 `repair_plan`、`plan_revisions`，并保留修改文件、测试结果、修复轮数和最终 Diff
+- Benchmark：10 个本地离线 Maven Bug Fixture，使用固定 Git bundle / base commit，通过真实 Agent + Docker Maven 评估修复能力
+- 评测报告：记录成功率、修复轮数、耗时、失败分类、最终 Diff、Plan Revision 和可获取的 LLM usage
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
@@ -75,6 +77,11 @@ java-code-agent/
 │  ├─ repair/
 │  │  ├─ models.py         # Repair Plan 与修订历史模型
 │  │  └─ tools.py          # 结构化只读计划工具
+│  ├─ evaluation/
+│  │  ├─ models.py         # Task/Result/Report 数据结构
+│  │  ├─ runner.py         # 顺序 Benchmark Runner
+│  │  ├─ tasks.py          # 固定任务目录加载
+│  │  └─ usage.py          # 评测侧 LLM usage 采集
 │  ├─ tools/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
 │  │  ├─ registry.py       # 仓库工具 LangChain 封装
@@ -86,6 +93,10 @@ java-code-agent/
 │     ├─ agent.py          # /agent/analyze 请求/响应模型
 │     └─ workspace.py      # /workspaces 请求模型
 ├─ tests/                  # 全部离线（本地临时 git 仓库 + Fake LLM）
+├─ evaluation/
+│  ├─ tasks.json           # 10 个固定 Bug 任务
+│  ├─ fixtures/            # 独立 Maven 项目和离线 Git bundle
+│  └─ results/             # 生成的 JSON 报告（gitignore）
 ├─ .env.example
 ├─ pyproject.toml
 └─ uv.lock
@@ -324,6 +335,73 @@ Docker Maven test
 - `repair_rounds`
 - `test_result`
 - `diff`
+
+### Evaluation / Benchmark
+
+Benchmark 只负责“测 Agent”，不会向 Agent 提供正确答案、Patch、特殊 Prompt 或 task-specific 工具逻辑。Agent 使用与真实请求相同的 Repair Planner + Code Intelligence + apply_patch + Docker Maven 流程。
+
+Fixture：
+
+- `evaluation/fixtures/<task_id>/`：独立 Maven 项目源码
+- `evaluation/fixtures/<task_id>/repo.bundle`：固定离线 Git 仓库 bundle
+- `evaluation/tasks.json`：task metadata 和固定 `base_commit`
+
+运行全部任务：
+
+```bash
+$env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
+uv run python -m app.evaluation run
+```
+
+运行单个任务：
+
+```bash
+uv run python -m app.evaluation run --task arithmetic-logic
+```
+
+JSON 报告写入：
+
+```text
+evaluation/results/<timestamp>.json
+```
+
+终端汇总包含：
+
+```text
+Tasks
+Passed
+Failed
+Success rate
+Average repair rounds
+Average duration
+LLM calls
+Tokens
+Estimated cost (provider 不支持时为 unavailable)
+```
+
+失败分类：
+
+- `workspace_setup_failed`
+- `initial_test_unexpectedly_passed`
+- `agent_failed`
+- `timeout`
+- `final_test_failed`
+- `infrastructure_error`
+
+成功标准只看最终独立 Maven test 是否通过，不信任 Agent 自述。单个任务失败会记录原因与 Agent 最终输出，然后继续执行后续任务。
+
+重新生成确定性 Fixture 和 bundle：
+
+```bash
+uv run python scripts/build_benchmark_assets.py
+```
+
+校验全部 Fixture 初始测试失败（需要 Docker）：
+
+```bash
+$env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
+uv run python scripts/validate_benchmark_fixtures.py
+```
 
 ### Java Code Intelligence
 

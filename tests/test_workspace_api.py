@@ -28,6 +28,7 @@ def test_create_workspace_endpoint(api_client, origin_repo):
     assert Path(body["repository_path"]).is_dir()
     assert body["branch"] == "main"
     assert body["commit"]
+    assert body["status"] == "ready"
 
 
 def test_create_workspace_with_branch(api_client, origin_repo):
@@ -56,6 +57,34 @@ def test_get_workspace_endpoint(api_client, origin_repo):
     assert body["workspace_id"] == created["workspace_id"]
     assert body["repository_path"] == created["repository_path"]
     assert body["branch"] == "main"
+    assert body["status"] == "ready"
+
+
+def test_list_workspaces_endpoint(api_client, origin_repo):
+    first = api_client.post(
+        "/workspaces", json={"repository_url": origin_repo.as_uri()}
+    ).json()
+    second = api_client.post(
+        "/workspaces",
+        json={"repository_url": origin_repo.as_uri(), "branch": "develop"},
+    ).json()
+
+    response = api_client.get("/workspaces")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["workspace_id"] for item in body} == {
+        first["workspace_id"],
+        second["workspace_id"],
+    }
+    assert all(item["status"] == "ready" for item in body)
+    assert {item["branch"] for item in body} == {"main", "develop"}
+
+
+def test_list_workspaces_empty(api_client):
+    response = api_client.get("/workspaces")
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_get_workspace_path_traversal(api_client):
@@ -75,3 +104,4 @@ def test_delete_workspace_endpoint(api_client, origin_repo):
     assert not repo_path.parent.exists()
     assert api_client.get(f"/workspaces/{ws_id}").status_code == 404
     assert api_client.delete(f"/workspaces/{ws_id}").status_code == 404
+    assert api_client.get("/workspaces").json() == []

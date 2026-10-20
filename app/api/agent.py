@@ -10,6 +10,7 @@ from app.llm.client import LLMConfigError, build_chat_model
 from app.schemas.agent import AnalyzeRequest, AnalyzeResponse
 from app.workspace import manager as workspace_manager_module
 from app.workspace.manager import WorkspaceNotFoundError
+from app.workspace.models import WorkspaceStatus
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
             info = workspace_manager_module.workspace_manager.get(request.workspace_id)
         except WorkspaceNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if info.status != WorkspaceStatus.READY:
+            raise HTTPException(
+                status_code=409,
+                detail=f"workspace 尚未就绪（status={info.status.value}）: {request.workspace_id}",
+            )
         repository_path = info.repository_path
     else:
         repository_path = request.repository_path or ""

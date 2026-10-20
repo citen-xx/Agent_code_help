@@ -27,6 +27,12 @@ def create_workspace(request: WorkspaceCreateRequest) -> WorkspaceInfo:
         raise HTTPException(status_code=502, detail=f"Git 操作失败：{exc}") from exc
 
 
+@router.get("", response_model=list[WorkspaceInfo])
+def list_workspaces() -> list[WorkspaceInfo]:
+    """List all isolated workspaces."""
+    return manager_module.workspace_manager.list()
+
+
 @router.get("/{workspace_id}", response_model=WorkspaceInfo)
 def get_workspace(workspace_id: str) -> WorkspaceInfo:
     """Return the basic status of a workspace."""

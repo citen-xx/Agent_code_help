@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from app.core.config import settings
 from app.workspace import git
-from app.workspace.models import WorkspaceInfo
+from app.workspace.models import WorkspaceInfo, WorkspaceStatus
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,10 @@ class WorkspaceValidationError(WorkspaceError):
 
 class WorkspaceNotFoundError(WorkspaceError):
     """Unknown workspace id (or invalid id format)."""
+
+
+class WorkspaceNotReadyError(WorkspaceError):
+    """Workspace exists but is not ready for analysis."""
 
 
 def validate_repository_url(url: str, allow_file_urls: bool = False) -> str:
@@ -124,18 +128,34 @@ class WorkspaceManager:
 
         logger.info("Creating workspace %s (url=%s, branch=%s, commit=%s)", workspace_id, url, branch, commit)
         try:
+            self._write_meta(
+                workspace_dir,
+                repository_url=url,
+                branch=branch,
+                commit=commit,
+                status=WorkspaceStatus.CREATING,
+            )
             git.clone_repository(url, repo_dir, timeout=self.clone_timeout_seconds)
             if branch:
                 git.checkout_branch(repo_dir, branch)
             if commit:
                 git.checkout_commit(repo_dir, commit)
-            self._write_meta(workspace_dir, repository_url=url, branch=branch, commit=commit)
+            current_branch = git.current_branch(repo_dir)
+            current_commit = git.head_commit(repo_dir)
             info = WorkspaceInfo(
                 workspace_id=workspace_id,
                 repository_path=str(repo_dir),
                 repository_url=url,
-                branch=git.current_branch(repo_dir),
-                commit=git.head_commit(repo_dir),
+                branch=current_branch,
+                commit=current_commit,
+                status=WorkspaceStatus.READY,
+            )
+            self._write_meta(
+                workspace_dir,
+                repository_url=url,
+                branch=current_branch,
+                commit=current_commit,
+                status=WorkspaceStatus.READY,
             )
         except Exception:
             # clean up the partial workspace, then re-raise
@@ -146,7 +166,12 @@ class WorkspaceManager:
                 logger.warning("Failed to clean up partial workspace %s", workspace_dir)
             raise
 
-        logger.info("Workspace %s ready (branch=%s, commit=%s)", workspace_id, info.branch, info.commit[:12])
+        logger.info(
+            "Workspace %s ready (branch=%s, commit=%s)",
+            workspace_id,
+            info.branch,
+            (info.commit or "")[:12],
+        )
         return info
 
     # ---- lookup / deletion ----
@@ -155,20 +180,54 @@ class WorkspaceManager:
         """Return the current status of an existing workspace."""
         workspace_dir = self._workspace_dir(workspace_id)
         repo_dir = workspace_dir / "repository"
-        if not repo_dir.is_dir():
+        if not workspace_dir.is_dir():
             raise WorkspaceNotFoundError(f"workspace 不存在: {workspace_id}")
         meta = self._read_meta(workspace_dir)
+        status = self._parse_status(meta.get("status"))
+        if status == WorkspaceStatus.READY and not repo_dir.is_dir():
+            status = WorkspaceStatus.ERROR
+
+        branch = meta.get("branch")
+        commit = meta.get("commit")
+        if status == WorkspaceStatus.READY:
+            try:
+                branch = git.current_branch(repo_dir)
+                commit = git.head_commit(repo_dir)
+            except git.GitError:
+                logger.warning("Workspace %s repository is not usable", workspace_id, exc_info=True)
+                status = WorkspaceStatus.ERROR
+
         return WorkspaceInfo(
             workspace_id=workspace_id,
             repository_path=str(repo_dir),
             repository_url=meta.get("repository_url", ""),
-            branch=git.current_branch(repo_dir),
-            commit=git.head_commit(repo_dir),
+            branch=branch,
+            commit=commit,
+            status=status,
         )
+
+    def list(self) -> list[WorkspaceInfo]:
+        """List all readable workspaces under the workspace root."""
+        if not self.root.is_dir():
+            return []
+        infos: list[WorkspaceInfo] = []
+        for candidate in sorted(self.root.iterdir(), key=lambda path: path.name):
+            if not candidate.is_dir() or not WORKSPACE_ID_RE.fullmatch(candidate.name):
+                continue
+            try:
+                infos.append(self.get(candidate.name))
+            except WorkspaceNotFoundError:
+                logger.warning("Skipping invalid workspace directory %s", candidate)
+        return infos
 
     def resolve_repository_path(self, workspace_id: str) -> Path:
         """Resolve a workspace id to its local repository path."""
-        return Path(self.get(workspace_id).repository_path)
+        info = self.get(workspace_id)
+        if info.status != WorkspaceStatus.READY:
+            raise WorkspaceNotReadyError(
+                f"workspace 尚未就绪（status={info.status.value}）: {workspace_id}"
+            )
+        return Path(info.repository_path)
 
     def assert_repository_binding(self, workspace_id: str, repository_path: str | Path) -> Path:
         """Ensure ``repository_path`` is exactly this workspace's repository.
@@ -234,6 +293,15 @@ class WorkspaceManager:
             return json.loads((workspace_dir / "meta.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
+
+    @staticmethod
+    def _parse_status(value: object) -> WorkspaceStatus:
+        try:
+            return WorkspaceStatus(value)
+        except ValueError:
+            # Missing status is treated as ready for metadata written before
+            # the status field existed. Unknown non-empty values are errors.
+            return WorkspaceStatus.READY if value is None else WorkspaceStatus.ERROR
 
 
 #: Process-wide default manager (root comes from settings.WORKSPACE_ROOT).

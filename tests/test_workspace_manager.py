@@ -9,8 +9,10 @@ from app.workspace import git
 from app.workspace.manager import (
     WorkspaceManager,
     WorkspaceNotFoundError,
+    WorkspaceNotReadyError,
     WorkspaceValidationError,
 )
+from app.workspace.models import WorkspaceStatus
 from tests.git_helpers import git_run
 
 
@@ -25,6 +27,7 @@ def test_create_workspace(manager, origin_repo):
     assert (repo_path / "Main.java").is_file()
     assert info.branch == "main"
     assert info.commit == git_run(["rev-parse", "HEAD"], cwd=origin_repo).strip()
+    assert info.status == WorkspaceStatus.READY
 
 
 def test_create_workspace_is_isolated(manager, origin_repo):
@@ -110,11 +113,43 @@ def test_get_workspace(manager, origin_repo):
     assert fetched.repository_path == created.repository_path
     assert fetched.repository_url == origin_repo.as_uri()
     assert fetched.branch == "main"
+    assert fetched.status == WorkspaceStatus.READY
+
+
+def test_list_workspaces(manager, origin_repo):
+    first = manager.create(origin_repo.as_uri())
+    second = manager.create(origin_repo.as_uri(), branch="develop")
+    (manager.root / "not-a-workspace").mkdir()
+    (manager.root / "README.txt").write_text("ignored", encoding="utf-8")
+
+    infos = manager.list()
+
+    assert [info.workspace_id for info in infos] == sorted(
+        [first.workspace_id, second.workspace_id]
+    )
+    assert all(info.status == WorkspaceStatus.READY for info in infos)
+    assert {info.branch for info in infos} == {"main", "develop"}
+
+
+def test_list_workspaces_empty(manager):
+    assert manager.list() == []
 
 
 def test_get_unknown_workspace_raises(manager):
     with pytest.raises(WorkspaceNotFoundError):
         manager.get("abcdef012345")
+
+
+def test_broken_repository_is_reported_as_error(manager, origin_repo):
+    info = manager.create(origin_repo.as_uri())
+    repository = Path(info.repository_path)
+    repository.rename(repository.with_name("repository.broken"))
+
+    broken = manager.get(info.workspace_id)
+
+    assert broken.status == WorkspaceStatus.ERROR
+    with pytest.raises(WorkspaceNotReadyError):
+        manager.resolve_repository_path(info.workspace_id)
 
 
 def test_delete_workspace(manager, origin_repo):

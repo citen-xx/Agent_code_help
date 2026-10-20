@@ -6,6 +6,7 @@ import pytest
 
 from app.tools.git_tools import create_git_tools
 from app.tools.repo import ToolError
+from app.tools.registry import create_repo_tools
 from app.workspace.manager import WorkspaceNotFoundError
 from tests.git_helpers import git_run
 
@@ -114,3 +115,39 @@ def test_git_tools_reject_arbitrary_repository_path(tmp_path, ws):
     outside.mkdir()
     with pytest.raises(ToolError):
         create_git_tools(ws.workspace_id, outside)
+
+
+def test_multiple_workspaces_are_isolated(manager, origin_repo):
+    first = manager.create(origin_repo.as_uri())
+    second = manager.create(origin_repo.as_uri())
+    first_git = {
+        tool.name: tool
+        for tool in create_git_tools(
+            first.workspace_id, first.repository_path, manager=manager
+        )
+    }
+    second_git = {
+        tool.name: tool
+        for tool in create_git_tools(
+            second.workspace_id, second.repository_path, manager=manager
+        )
+    }
+    second_files = {
+        tool.name: tool for tool in create_repo_tools(second.repository_path)
+    }
+
+    first_repo = Path(first.repository_path)
+    (first_repo / "Main.java").write_text(
+        "public class Main { int isolated; }\n", encoding="utf-8"
+    )
+    (first_repo / "FirstOnly.java").write_text(
+        "public class FirstOnly {}\n", encoding="utf-8"
+    )
+
+    assert "1 modified" in first_git["git_status"].invoke({})
+    assert "working tree: clean" in second_git["git_status"].invoke({})
+    assert "isolated" in first_git["git_diff"].invoke({})
+    assert "无修改" in second_git["git_diff"].invoke({})
+    assert "FirstOnly" not in second_files["list_files"].invoke({"path": "."})
+    with pytest.raises(ToolError):
+        second_files["read_file"].invoke({"path": "FirstOnly.java"})

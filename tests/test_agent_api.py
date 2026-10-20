@@ -1,5 +1,7 @@
 """HTTP API tests for POST /agent/analyze — LLM is faked via monkeypatch."""
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -106,6 +108,26 @@ def test_analyze_unknown_workspace_returns_404(workspace_root, monkeypatch):
     with TestClient(create_app()) as client:
         response = client.post("/agent/analyze", json={"task": "分析", "workspace_id": "abcdef012345"})
     assert response.status_code == 404
+
+
+def test_analyze_rejects_not_ready_workspace(
+    workspace_root, origin_repo, monkeypatch
+):
+    manager = WorkspaceManager(workspace_root, allow_file_urls=True)
+    monkeypatch.setattr("app.workspace.manager.workspace_manager", manager)
+    monkeypatch.setattr("app.api.agent.build_chat_model", lambda: FakeChatModel())
+    info = manager.create(origin_repo.as_uri())
+    repository = Path(info.repository_path)
+    repository.rename(repository.with_name("repository.broken"))
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/agent/analyze",
+            json={"task": "分析", "workspace_id": info.workspace_id},
+        )
+
+    assert response.status_code == 409
+    assert "error" in response.json()["detail"]
 
 
 def test_analyze_workspace_id_path_traversal_blocked(workspace_root, monkeypatch):

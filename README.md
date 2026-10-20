@@ -11,9 +11,9 @@
 
 第三阶段：Git 仓库 Workspace + Git 只读工具：
 
-- Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit
+- Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
-- 新接口：`POST /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
+- 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
 仍然禁止：修改/删除代码、Shell 任意执行、Maven/Gradle、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。
@@ -41,7 +41,7 @@ java-code-agent/
 │  ├─ api/
 │  │  ├─ health.py         # GET /health
 │  │  ├─ agent.py          # POST /agent/analyze
-│  │  └─ workspaces.py     # POST/GET/DELETE /workspaces
+│  │  └─ workspaces.py     # POST/GET/LIST/DELETE /workspaces
 │  ├─ core/
 │  │  ├─ config.py         # Pydantic Settings（LLM_*、WORKSPACE_ROOT）
 │  │  └─ logging.py        # logging 配置
@@ -142,13 +142,28 @@ curl -X POST http://127.0.0.1:8000/workspaces \
   "repository_path": "D:/Project/java-code-agent/.workspaces/1a2b3c4d5e6f/repository",
   "repository_url": "https://github.com/spring-projects/spring-petclinic.git",
   "branch": "main",
-  "commit": "abc123..."
+  "commit": "abc123...",
+  "status": "ready"
 }
 ```
 
+### GET /workspaces
+
+列出当前 Workspace 根目录下的全部 Workspace：
+
+```bash
+curl http://127.0.0.1:8000/workspaces
+```
+
+响应为 `WorkspaceInfo` 数组，每个元素包含仓库地址、branch、commit、状态和本地 repository 路径。
+
 ### GET /workspaces/{workspace_id}
 
-查询 Workspace 基本状态（同上响应结构）。
+查询 Workspace 基本状态（同上响应结构）。`status` 可能为：
+
+- `creating`：正在 clone / checkout
+- `ready`：可以用于 Agent 分析
+- `error`：仓库目录缺失或 Git 元数据不可读
 
 ### DELETE /workspaces/{workspace_id}
 
@@ -177,6 +192,7 @@ curl -X POST http://127.0.0.1:8000/agent/analyze \
 ```
 
 workspace 模式下 Agent 额外拥有 4 个只读 Git 工具（git_status / git_diff / git_log / git_show）。
+如果 Workspace 状态不是 `ready`，接口返回 409，不会启动 Agent。
 
 ## 安全说明
 

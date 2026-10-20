@@ -77,14 +77,13 @@ def test_project_tool_mismatch(maven_repo):
         select_build_project(projects, "gradle")
 
 
-def test_wrapper_is_preferred(maven_repo):
+def test_maven_command_stays_fixed_with_wrapper(maven_repo):
     wrapper_name = "mvnw.cmd" if os.name == "nt" else "mvnw"
     wrapper = maven_repo / wrapper_name
     _write(wrapper, "wrapper")
     project = detect_build_projects(maven_repo)[0]
-    assert project.uses_wrapper is True
-    assert project.command[0] == str(wrapper)
-    assert project.command[1:] == ["test"]
+    assert project.uses_wrapper is False
+    assert project.command == ["mvn", "test"]
 
 
 def test_successful_maven_run(maven_repo, monkeypatch):
@@ -103,8 +102,11 @@ def test_successful_maven_run(maven_repo, monkeypatch):
     assert result.stderr == ""
     assert result.timed_out is False
     assert captured["command"][-1] == "test"
-    assert Path(captured["kwargs"]["cwd"]) == maven_repo
     assert captured["kwargs"]["shell"] is False
+    assert "--network" in captured["command"]
+    assert captured["command"][captured["command"].index("--network") + 1] == "none"
+    mount = captured["command"][captured["command"].index("--mount") + 1]
+    assert f"source={maven_repo}" in mount
 
 
 def test_failed_test_run_returns_exit_code_and_output(maven_repo, monkeypatch):
@@ -158,15 +160,21 @@ def test_timeout_terminates_process(maven_repo, monkeypatch):
             self.killed = True
 
     process = TimeoutProcess()
-    terminated = []
-    monkeypatch.setattr(build, "_POPEN", lambda *args, **kwargs: process)
     monkeypatch.setattr(
-        build, "_terminate_process_tree", lambda proc: terminated.append(proc)
+        "app.workspace.docker_sandbox._docker_preflight", lambda: None
+    )
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._POPEN", lambda *args, **kwargs: process
+    )
+    cleaned = []
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._cleanup_container",
+        lambda name: cleaned.append(name),
     )
 
     result = run_workspace_tests(maven_repo, "maven", timeout_seconds=1)
 
-    assert terminated == [process]
+    assert cleaned
     assert result.timed_out is True
     assert result.success is False
     assert result.exit_code == -1
@@ -176,16 +184,16 @@ def test_timeout_terminates_process(maven_repo, monkeypatch):
 
 
 def test_missing_executable_returns_clear_error(maven_repo, monkeypatch):
-    def missing(*args, **kwargs):
-        raise FileNotFoundError("mvn not found")
-
-    monkeypatch.setattr(build, "_POPEN", missing)
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._docker_preflight",
+        lambda: "Docker CLI 不可用：请确认 docker 已安装并加入 PATH",
+    )
 
     result = run_workspace_tests(maven_repo, "maven")
 
     assert result.success is False
     assert result.exit_code is None
-    assert "无法启动" in result.error
+    assert "Docker CLI 不可用" in result.error
 
 
 def test_no_project_returns_structured_error(tmp_path):

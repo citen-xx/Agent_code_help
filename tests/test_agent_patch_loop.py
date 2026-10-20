@@ -90,6 +90,11 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     assert "// step1" in (repo / "Main.java").read_text(encoding="utf-8")
     # The LLM never requested run_tests: Patch triggered Maven automatically.
     assert len(captured) == 1
+    docker_command = captured[0]["command"]
+    assert docker_command[:2] == ["docker", "run"]
+    assert docker_command[docker_command.index("--network") + 1] == "none"
+    assert docker_command.count("--mount") == 1
+    assert docker_command[-2:] == ["mvn", "test"]
     assert model.calls == 1  # passing test ends the graph immediately
 
 
@@ -188,3 +193,35 @@ def test_agent_stops_after_three_repair_rounds(
     assert "Tests run: 1, Failures: 1" in feedback
     assert "已达到最多 3 轮自动修复" in body["answer"]
     assert model.calls == 4
+
+
+def test_agent_survives_docker_unavailable(
+    workspace_root, origin_repo, monkeypatch
+):
+    _, info, repo = _setup(workspace_root, origin_repo, monkeypatch)
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._docker_preflight",
+        lambda: "Docker 守护进程不可用: test",
+    )
+    model = FakeChatModel(
+        script=[
+            _patch_only(0),
+            AIMessage(content="Docker 不可用，保留修改并报告错误。"),
+        ]
+    )
+    monkeypatch.setattr("app.api.agent.build_chat_model", lambda: model)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/agent/analyze",
+            json={"task": "修复并测试", "workspace_id": info.workspace_id},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["modified_files"] == ["Main.java"]
+    assert body["test_result"]["success"] is False
+    assert body["test_result"]["exit_code"] is None
+    assert "Docker 守护进程不可用" in body["test_result"]["error"]
+    assert "// step1" in (repo / "Main.java").read_text(encoding="utf-8")
+    assert model.calls == 2

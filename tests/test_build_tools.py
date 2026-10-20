@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.tools.build_tools import create_build_tools
 from app.tools.repo import ToolError
 from app.workspace.manager import WorkspaceNotFoundError
-from tests.build_helpers import patch_popen
+from tests.build_helpers import patch_popen, patch_popen_sequence
 
 
 @pytest.fixture
@@ -104,20 +104,14 @@ def test_build_tools_are_bound_to_each_workspace(manager, origin_repo, monkeypat
             second.workspace_id, second.repository_path, manager=manager
         )
     }
-    captured = []
-
-    def fake_popen(command, **kwargs):
-        captured.append(Path(kwargs["cwd"]))
-        from tests.build_helpers import FakeProcess
-
-        return FakeProcess(returncode=0)
-
-    monkeypatch.setattr("app.workspace.build._POPEN", fake_popen)
+    captured = patch_popen_sequence(monkeypatch, [{"returncode": 0}])
 
     first_tools["run_tests"].invoke({"tool": "maven"})
     second_tools["run_tests"].invoke({"tool": "maven"})
 
-    assert captured == [
-        Path(first.repository_path),
-        Path(second.repository_path),
+    mounts = [
+        call["command"][call["command"].index("--mount") + 1]
+        for call in captured
     ]
+    assert f"source={Path(first.repository_path)}" in mounts[0]
+    assert f"source={Path(second.repository_path)}" in mounts[1]

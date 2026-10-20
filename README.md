@@ -9,19 +9,19 @@
 
 ## 当前阶段
 
-第五阶段：安全代码修改与 Maven 测试闭环：
+第六阶段：Maven Docker Sandbox 隔离执行：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
 - 构建系统识别：仅检查 Workspace 根目录的 Maven `pom.xml` 或 Gradle 构建文件
-- 受控测试执行：固定执行 Maven/Gradle 的 `test`，返回 exit code、stdout、stderr、超时和截断信息
+- 受控测试执行：Maven 固定执行 `mvn test`，默认在临时 Docker 容器内运行，返回 exit code、stdout、stderr、超时和截断信息
 - Agent 工具：`detect_build_tools`、`run_tests`，失败输出会反馈给 LLM 用于定位原因
 - 原子代码修改：`apply_patch` 只修改绑定 Workspace 内已存在的 UTF-8 文本文件，失败自动回滚
-- Maven 修复闭环：定位 → 读取 → 修改 → 自动 Maven test → 分析失败 → 读取/再修改；测试通过立即结束，最多允许 3 轮修复 Patch
+- Maven 修复闭环：定位 → 读取 → 修改 → 自动 Docker Maven test → 分析失败 → 读取/再修改；测试通过立即结束，最多允许 3 轮修复 Patch
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：任意 Shell、任意 Maven/Gradle 参数、文件创建/删除、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
+仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、Tree-sitter、PostgreSQL、Redis、MCP、SSE。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
 
 ## 推荐流程
 
@@ -59,6 +59,7 @@ java-code-agent/
 │  │  ├─ manager.py        # WorkspaceManager（隔离目录、URL/ref 校验）
 │  │  ├─ git.py            # 受控 Git CLI 封装（白名单参数 + 超时）
 │  │  ├─ build.py          # Maven/Gradle 检测与固定 test 执行
+│  │  ├─ docker_sandbox.py # 临时 Docker Maven 沙箱
 │  │  └─ models.py         # WorkspaceInfo 模型
 │  ├─ tools/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
@@ -122,6 +123,21 @@ BUILD_TEST_TIMEOUT_SECONDS=300
 ```
 
 该值控制单次 Maven/Gradle `test` 的超时时间，默认 300 秒。
+
+### Docker Maven Sandbox 配置
+
+```env
+DOCKER_MAVEN_IMAGE=maven:3.9-eclipse-temurin-17
+DOCKER_MAVEN_CPUS=1.0
+DOCKER_MAVEN_MEMORY=1g
+DOCKER_MAVEN_PIDS_LIMIT=256
+DOCKER_MAVEN_TMPFS_SIZE=256m
+```
+
+- 需要本机 Docker CLI 和运行中的 Docker Engine / Docker Desktop。
+- Maven 测试固定使用 `--network none`，不读取网络开关配置。
+- `DOCKER_MAVEN_IMAGE` 需要包含 Maven、JDK，以及项目测试所需的 Maven 依赖/插件缓存。
+- 因容器默认无网络，项目依赖不能临时下载；可在镜像构建阶段预热 `/root/.m2`。
 
 ## 接口
 
@@ -234,6 +250,7 @@ Workspace 模式下 Agent 可以调用 `apply_patch`，输入为结构化精确�
 - 所有校验完成后才提交；任一步失败会恢复已替换文件。
 - 返回 `affected_files`、当前 `git diff` 和是否截断。
 - 每次 `apply_patch` 成功后 Graph 自动执行固定 Maven test，无需 LLM 再次请求。
+- 自动测试在临时 Docker 容器内运行；宿主机 Maven 不会被调用，也不存在宿主 Maven 回退路径。
 - Maven test 通过后立即结束 Graph，不再继续调用 LLM。
 - Maven test 失败后，结构化输出会作为 ToolMessage 回传 LLM，可继续读取代码并修改。
 - 测试失败后最多允许 3 次修复 Patch；第 3 次修复后测试仍失败时自动结束 Graph 并返回失败结果。
@@ -289,9 +306,13 @@ curl -X POST http://127.0.0.1:8000/agent/analyze \
 - URL / branch / commit 均有基本校验，ref 不允许选项注入或 revision range；clone 默认超时 300 秒
 - `git_diff` / `git_show` 最大输出 20,000 字符，`git_status` 最多 100 条记录，`git_log` 最多 50 条；截断时明确标记
 - 测试命令固定为 Maven/Gradle 的 `test`，不接受额外命令、参数、文件路径或 Shell；Gradle 固定使用 `--no-daemon`
-- 测试进程在 Workspace repository 目录启动，使用 `shell=False`、非交互 stdin 和超时；超时会尝试终止整个进程树
+- Maven 容器只绑定挂载当前 Workspace 的 repository 到 `/workspace`，不挂载其他 Workspace、宿主机 Home、Docker Socket 或 Maven 缓存目录
+- Maven 容器固定 `--network none`、`--cap-drop ALL`、`no-new-privileges`，并设置 CPU、内存、PID 和 tmpfs 限制
+- 容器使用唯一名称，正常完成、Maven 失败、Docker 失败和超时后都会执行 `docker rm -f` 清理
+- `apply_patch` 仍由宿主服务执行，Docker 容器只负责 Maven 测试，不提供容器内代码修改能力
+- Docker CLI/守护进程不可用时返回结构化 `TestRunResult.error`，不会让 Agent Graph 崩溃，也不会回退宿主机 Maven
 - stdout / stderr 各自最多保留 20,000 字符，超出时明确标记；测试超时默认 300 秒，可通过 `BUILD_TEST_TIMEOUT_SECONDS` 调整
-- Maven/Gradle 测试会执行仓库中的构建脚本和测试代码，这是该阶段的既定能力；当前没有容器级隔离，只应分析受信任的公开仓库
+- Maven 测试会执行仓库中的构建脚本和测试代码；容器隔离限制的是资源、网络和宿主文件访问，不等同于对所有恶意代码的绝对安全保证
 - `apply_patch` 拒绝绝对路径、`..` 路径穿越、`.git` 目录、符号链接组件、硬链接、二进制文件、非 UTF-8 文件和超过 2 MiB 的文件
 - `apply_patch`、`run_tests` 和 Git 工具都不会暴露 workspace 路径参数，全部由服务端按 `workspace_id` 绑定
 
@@ -303,12 +324,19 @@ uv run pytest
 
 所有测试使用本地临时 Git 仓库与 Fake LLM，完全离线、不消耗任何 API 额度。
 
-真实 Maven 验收（需要本机 Maven、网络及首次依赖下载，不属于 pytest）：
+真实 Docker Maven 验收（需要运行中的 Docker，以及可访问的 Maven 基础镜像；不属于 pytest）：
 
 ```bash
-uv run python scripts/acceptance_build.py
+docker build \
+  -f scripts/docker/maven-offline.Dockerfile \
+  -t java-code-agent-maven-fixture:local \
+  tests/fixtures/maven_basic
+
+$env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
 uv run python scripts/acceptance_patch_loop.py
 ```
+
+离线验收镜像在构建阶段预热 Maven 依赖，真正执行 Agent 测试时容器使用 `--network none`。
 
 ## 后续计划
 

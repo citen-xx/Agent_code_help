@@ -35,7 +35,12 @@ def patch_popen(
         captured["kwargs"] = kwargs
         return FakeProcess(stdout=stdout, stderr=stderr, returncode=returncode)
 
-    monkeypatch.setattr("app.workspace.build._POPEN", fake_popen)
+    monkeypatch.setattr("app.workspace.docker_sandbox._docker_preflight", lambda: None)
+    monkeypatch.setattr("app.workspace.docker_sandbox._POPEN", fake_popen)
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._cleanup_container",
+        lambda name: captured.setdefault("cleanup", []).append(name),
+    )
     return captured
 
 
@@ -56,5 +61,10 @@ def patch_popen_sequence(
             returncode=result.get("returncode", 0),
         )
 
-    monkeypatch.setattr("app.workspace.build._POPEN", fake_popen)
+    monkeypatch.setattr("app.workspace.docker_sandbox._docker_preflight", lambda: None)
+    monkeypatch.setattr("app.workspace.docker_sandbox._POPEN", fake_popen)
+    monkeypatch.setattr(
+        "app.workspace.docker_sandbox._cleanup_container",
+        lambda name: None,
+    )
     return captured

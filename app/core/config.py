@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     WORKSPACE_ROOT: str = ".workspaces"
     WORKSPACE_CLONE_TIMEOUT_SECONDS: float = 300.0
     BUILD_TEST_TIMEOUT_SECONDS: float = 300.0
+    DOCKER_MAVEN_IMAGE: str = "maven:3.9-eclipse-temurin-17"
+    DOCKER_MAVEN_CPUS: str = "1.0"
+    DOCKER_MAVEN_MEMORY: str = "1g"
+    DOCKER_MAVEN_PIDS_LIMIT: int = 256
+    DOCKER_MAVEN_TMPFS_SIZE: str = "256m"
 
 
 @lru_cache

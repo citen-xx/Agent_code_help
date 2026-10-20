@@ -13,6 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from app.core.config import settings
+from app.workspace.docker_sandbox import run_maven_in_docker
 from app.workspace.models import BuildProjectInfo, BuildTool, TestRunResult
 
 logger = logging.getLogger(__name__)
@@ -74,12 +76,8 @@ def _wrapper_command(repo: Path, names: tuple[str, ...]) -> list[str] | None:
 
 
 def _maven_command(repo: Path) -> tuple[list[str], bool]:
-    wrapper_names = ("mvnw.cmd", "mvnw") if os.name == "nt" else ("mvnw", "mvnw.cmd")
-    wrapper = _wrapper_command(repo, wrapper_names)
-    if wrapper:
-        return [*wrapper, "test"], True
-    executable = "mvn.cmd" if os.name == "nt" else "mvn"
-    return [executable, "test"], False
+    # The fixed Maven command runs inside the sandbox image, not a host wrapper.
+    return ["mvn", "test"], False
 
 
 def _gradle_command(repo: Path) -> tuple[list[str], bool]:
@@ -221,6 +219,16 @@ def run_workspace_tests(
     try:
         repo = _repository_root(repository_path)
         selected = select_build_project(detect_build_projects(repo), tool)
+        if selected.tool == BuildTool.MAVEN:
+            return run_maven_in_docker(
+                repo,
+                timeout_seconds=timeout_seconds,
+                image=settings.DOCKER_MAVEN_IMAGE,
+                cpus=settings.DOCKER_MAVEN_CPUS,
+                memory=settings.DOCKER_MAVEN_MEMORY,
+                pids_limit=settings.DOCKER_MAVEN_PIDS_LIMIT,
+                tmpfs_size=settings.DOCKER_MAVEN_TMPFS_SIZE,
+            )
         command = selected.command
         popen_kwargs: dict = {
             "cwd": str(repo),

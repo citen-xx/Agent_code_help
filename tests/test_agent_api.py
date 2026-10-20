@@ -158,7 +158,9 @@ def test_analyze_can_run_tests_and_receive_failure_feedback(
     assert '"exit_code": 1' in tool_contents
     assert "OrderServiceTest.shouldCreateOrder" in tool_contents
     assert "expected true but was false" in tool_contents
-    assert Path(captured["kwargs"]["cwd"]) == repository
+    mount = captured["command"][captured["command"].index("--mount") + 1]
+    assert f"source={repository}" in mount
+    assert "target=/workspace" in mount
     assert captured["kwargs"]["shell"] is False
 
 

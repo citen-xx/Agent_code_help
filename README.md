@@ -9,7 +9,7 @@
 
 ## 当前阶段
 
-第六阶段：Maven Docker Sandbox 隔离执行：
+第七阶段：Java Code Intelligence（Tree-sitter 只读分析）：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
@@ -18,10 +18,12 @@
 - Agent 工具：`detect_build_tools`、`run_tests`，失败输出会反馈给 LLM 用于定位原因
 - 原子代码修改：`apply_patch` 只修改绑定 Workspace 内已存在的 UTF-8 文本文件，失败自动回滚
 - Maven 修复闭环：定位 → 读取 → 修改 → 自动 Docker Maven test → 分析失败 → 读取/再修改；测试通过立即结束，最多允许 3 轮修复 Patch
+- Java 符号索引：Tree-sitter 解析 Workspace 内 `.java`，提取 package/import/类/接口/枚举/record/方法/构造器/字段
+- 符号工具：`list_symbols`、`find_symbol`、`find_references`，支持重载、同名定义、嵌套类与行号定位
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、Tree-sitter、PostgreSQL、Redis、MCP、SSE。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
+仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、PostgreSQL、Redis、MCP、SSE、LSP、javac 类型解析、JAR 跨依赖分析和调用图。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
 
 ## 推荐流程
 
@@ -61,6 +63,11 @@ java-code-agent/
 │  │  ├─ build.py          # Maven/Gradle 检测与固定 test 执行
 │  │  ├─ docker_sandbox.py # 临时 Docker Maven 沙箱
 │  │  └─ models.py         # WorkspaceInfo 模型
+│  ├─ code_intel/
+│  │  ├─ parser.py         # Tree-sitter Java 符号/引用提取
+│  │  ├─ index.py          # Workspace 级内存索引与增量刷新
+│  │  ├─ registry.py       # 按 workspace_id 管理索引生命周期
+│  │  └─ tools.py          # list_symbols/find_symbol/find_references
 │  ├─ tools/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
 │  │  ├─ registry.py       # 仓库工具 LangChain 封装
@@ -82,6 +89,8 @@ java-code-agent/
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/)
 - Git CLI（需在 PATH 中可用，用于 clone 与只读 Git 工具）
+- Tree-sitter 与 tree-sitter-java（由 `uv sync` 安装，无额外系统依赖）
+- Docker CLI + 运行中的 Docker Engine（Maven Sandbox）
 
 ## 快速开始
 
@@ -262,6 +271,23 @@ Workspace 模式下 Agent 可以调用 `apply_patch`，输入为结构化精确�
 - `test_result`：最近一次测试的结构化结果
 - `diff`：运行结束时的 Git Diff
 
+### Java Code Intelligence
+
+Workspace 模式下的 Agent 优先使用以下只读工具：
+
+- `list_symbols`：按文件、类名或符号类型查看符号
+- `find_symbol`：按名称查找类、接口、枚举、record、方法、构造器、字段
+- `find_references`：按标识符名称查找引用位置，可选择包含定义
+
+索引特性：
+
+- 首次调用符号工具时按需构建，不自动占用 Workspace 创建时间
+- 只扫描 repository 内 `.java` 文件，跳过 `.git`、`target`、`build` 等目录
+- 索引保存在进程内存中，不引入数据库
+- `apply_patch` 成功后只重新解析受影响 `.java` 文件
+- Workspace 删除时同步清理内存索引
+- 单个文件 Tree-sitter 语法错误只跳过该文件，并在查询结果 `diagnostics` 中返回文件和行列
+- `find_references` 是语法节点 + 标识符匹配，不进行 javac 类型解析
 ### 运行测试
 
 Agent 在 Workspace 模式下可以调用：
@@ -337,6 +363,12 @@ uv run python scripts/acceptance_patch_loop.py
 ```
 
 离线验收镜像在构建阶段预热 Maven 依赖，真正执行 Agent 测试时容器使用 `--network none`。
+
+真实 Java Code Intelligence 验收（本地临时 Git Workspace，不需要 LLM）：
+
+```bash
+uv run python scripts/acceptance_code_intel.py
+```
 
 ## 后续计划
 

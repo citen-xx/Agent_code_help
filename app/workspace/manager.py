@@ -250,6 +250,9 @@ class WorkspaceManager:
             raise WorkspaceNotFoundError(f"workspace 不存在: {workspace_id}")
         logger.info("Deleting workspace %s", workspace_id)
         _rmtree_force(workspace_dir)
+        from app.code_intel.registry import remove_index
+
+        remove_index(workspace_id)
 
     # ---- internals ----
 

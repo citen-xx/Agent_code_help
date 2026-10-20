@@ -35,6 +35,7 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.state import AgentState
+from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
 from app.llm.client import build_chat_model
 from app.schemas.agent import AnalyzeResponse
@@ -55,6 +56,8 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 300.0
 
 SYSTEM_PROMPT = (
     "You are a Java coding assistant working inside one isolated workspace. "
+    "Prefer Java symbol tools (list_symbols, find_symbol, find_references) to "
+    "locate declarations and usages, then use read_file or search_code only as needed. "
     "For a code change, follow this order: locate the problem, read the relevant "
     "code, use apply_patch to edit existing UTF-8 files. A successful patch "
     "automatically runs the fixed Maven test. Inspect failures, read code again, "
@@ -263,6 +266,11 @@ async def run_agent(
     tools = create_repo_tools(repository_path)
     if workspace_id:
         # All mutating and execution tools are bound to this workspace only.
+        tools += create_code_intel_tools(
+            workspace_id,
+            repository_path,
+            manager=workspace_manager,
+        )
         tools += create_git_tools(workspace_id, repository_path, manager=workspace_manager)
         tools += create_patch_tools(
             workspace_id,

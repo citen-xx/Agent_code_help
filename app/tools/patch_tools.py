@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from app.code_intel.registry import refresh_workspace_files
 from app.tools.repo import ToolError
 from app.workspace.models import ApplyPatchRequest
 from app.workspace.patch import PatchError, apply_workspace_patch
@@ -40,6 +41,7 @@ def create_patch_tools(
             result = apply_workspace_patch(repo, changes)
         except PatchError as exc:
             raise ToolError(str(exc)) from exc
+        refresh_workspace_files(workspace_id, repo, result.affected_files)
         return result.model_dump_json(indent=2)
 
     return [

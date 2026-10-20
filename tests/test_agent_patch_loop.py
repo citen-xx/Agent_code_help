@@ -35,21 +35,23 @@ def _patch_change(step: int) -> dict:
     }
 
 
-def _tool_calls(patch_step: int, test_id: str) -> AIMessage:
+def _patch_only(step: int) -> AIMessage:
     return AIMessage(
         content="",
         tool_calls=[
             {
                 "name": "apply_patch",
-                "args": _patch_change(patch_step),
-                "id": f"patch_{patch_step}",
-            },
-            {
-                "name": "run_tests",
-                "args": {"tool": "maven"},
-                "id": test_id,
-            },
+                "args": _patch_change(step),
+                "id": f"auto_patch_{step}",
+            }
         ],
+    )
+
+
+def _tool_calls_named(name: str, args: dict, call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[{"name": name, "args": args, "id": call_id}],
     )
 
 
@@ -57,14 +59,13 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     workspace_root, origin_repo, monkeypatch
 ):
     _, info, repo = _setup(workspace_root, origin_repo, monkeypatch)
-    patch_popen(
+    captured = patch_popen_sequence(
         monkeypatch,
-        stdout="Tests run: 1, Failures: 0",
-        returncode=0,
+        [{"stdout": "Tests run: 1, Failures: 0", "returncode": 0}],
     )
     model = FakeChatModel(
         script=[
-            _tool_calls(0, "test_ok"),
+            _patch_only(0),
             AIMessage(content="已修复并通过测试。"),
         ]
     )
@@ -87,6 +88,9 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     assert "### 测试结果" in body["answer"]
     assert "### 最终 Diff" in body["answer"]
     assert "// step1" in (repo / "Main.java").read_text(encoding="utf-8")
+    # The LLM never requested run_tests: Patch triggered Maven automatically.
+    assert len(captured) == 1
+    assert model.calls == 1  # passing test ends the graph immediately
 
 
 def test_agent_repairs_after_failure_and_receives_feedback(
@@ -110,8 +114,9 @@ def test_agent_repairs_after_failure_and_receives_feedback(
     )
     model = FakeChatModel(
         script=[
-            _tool_calls(0, "test_fail"),
-            _tool_calls(1, "test_pass"),
+            _patch_only(0),
+            _tool_calls_named("read_file", {"path": "Main.java"}, "read_after_fail"),
+            _patch_only(1),
             AIMessage(content="第一次测试失败，第二次修复后通过。"),
         ]
     )
@@ -136,6 +141,8 @@ def test_agent_repairs_after_failure_and_receives_feedback(
     )
     assert "MainTest.fails" in feedback
     assert "expected true" in feedback
+    assert "public class Main" in feedback  # LLM could read code after failure
+    assert model.calls == 3
 
 
 def test_agent_stops_after_three_repair_rounds(
@@ -150,11 +157,10 @@ def test_agent_stops_after_three_repair_rounds(
     )
     model = FakeChatModel(
         script=[
-            _tool_calls(0, "test_0"),
-            _tool_calls(1, "test_1"),
-            _tool_calls(2, "test_2"),
-            _tool_calls(3, "test_3"),
-            _tool_calls(4, "test_4"),
+            _patch_only(0),
+            _patch_only(1),
+            _patch_only(2),
+            _patch_only(3),
             AIMessage(content="已完成三轮自动修复，测试仍未通过。"),
         ]
     )
@@ -179,4 +185,6 @@ def test_agent_stops_after_three_repair_rounds(
         for message in call_history
         if isinstance(message, ToolMessage)
     )
-    assert "已达到最多 3 轮自动修复上限" in feedback
+    assert "Tests run: 1, Failures: 1" in feedback
+    assert "已达到最多 3 轮自动修复" in body["answer"]
+    assert model.calls == 4

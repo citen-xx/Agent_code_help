@@ -17,7 +17,7 @@
 - 受控测试执行：固定执行 Maven/Gradle 的 `test`，返回 exit code、stdout、stderr、超时和截断信息
 - Agent 工具：`detect_build_tools`、`run_tests`，失败输出会反馈给 LLM 用于定位原因
 - 原子代码修改：`apply_patch` 只修改绑定 Workspace 内已存在的 UTF-8 文本文件，失败自动回滚
-- Maven 修复闭环：定位 → 读取 → 修改 → 测试 → 分析失败 → 再修改，测试失败后最多允许 3 轮修复 Patch
+- Maven 修复闭环：定位 → 读取 → 修改 → 自动 Maven test → 分析失败 → 读取/再修改；测试通过立即结束，最多允许 3 轮修复 Patch
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
@@ -233,7 +233,10 @@ Workspace 模式下 Agent 可以调用 `apply_patch`，输入为结构化精确�
 - 一次可以修改多个文件，但同一路径只能出现一次。
 - 所有校验完成后才提交；任一步失败会恢复已替换文件。
 - 返回 `affected_files`、当前 `git diff` 和是否截断。
-- 测试失败后最多允许 3 次修复 Patch；超过后 Graph 会拒绝继续修改。
+- 每次 `apply_patch` 成功后 Graph 自动执行固定 Maven test，无需 LLM 再次请求。
+- Maven test 通过后立即结束 Graph，不再继续调用 LLM。
+- Maven test 失败后，结构化输出会作为 ToolMessage 回传 LLM，可继续读取代码并修改。
+- 测试失败后最多允许 3 次修复 Patch；第 3 次修复后测试仍失败时自动结束 Graph 并返回失败结果。
 
 最终 `/agent/analyze` 响应新增：
 

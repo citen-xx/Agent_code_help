@@ -20,6 +20,7 @@ Only hand-written nodes and edges are used — no high-level agent APIs.
 import asyncio
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Literal
 
@@ -55,8 +56,9 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 300.0
 SYSTEM_PROMPT = (
     "You are a Java coding assistant working inside one isolated workspace. "
     "For a code change, follow this order: locate the problem, read the relevant "
-    "code, use apply_patch to edit existing UTF-8 files, run Maven tests with "
-    "run_tests(tool='maven'), inspect failures, and patch again when needed. "
+    "code, use apply_patch to edit existing UTF-8 files. A successful patch "
+    "automatically runs the fixed Maven test. Inspect failures, read code again, "
+    "and patch again when needed. "
     "apply_patch requires exact old_text/new_text replacements and is atomic. "
     "Never modify files outside apply_patch, never run shell commands, and never "
     "invent Maven arguments. At most three repair patches are allowed after the "
@@ -104,12 +106,16 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
     def tools_node(state: AgentState) -> dict:
         """Execute the pending tool calls; errors become tool messages."""
         last = state["messages"][-1]
-        tool_messages: list[ToolMessage] = []
+        tool_messages: list = []
         modified_files: list[str] = []
         latest_test: TestRunResult | None = state.get("test_result")
         has_seen_test_failure = state.get("has_seen_test_failure", False)
         repair_rounds = state.get("repair_rounds", 0)
-        for call in getattr(last, "tool_calls", None) or []:
+        calls = getattr(last, "tool_calls", None) or []
+        patch_requested = any(call.get("name") == "apply_patch" for call in calls)
+        patch_succeeded = False
+        explicit_test_passed = False
+        for call in calls:
             name = call.get("name")
             args = call.get("args") or {}
             call_id = call.get("id")
@@ -126,6 +132,11 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     f"[tool error] 已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复上限，"
                     "禁止继续 apply_patch。请基于现有 diff 和测试结果给出最终说明。"
                 )
+            elif name == "run_tests" and patch_requested:
+                content = (
+                    "[auto test] 本批包含 apply_patch，显式 run_tests 已跳过；"
+                    "Patch 成功后会自动运行 Maven test。"
+                )
             else:
                 try:
                     content = str(tool.invoke(args))
@@ -139,6 +150,7 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     patch_body = json.loads(content)
                     affected = patch_body.get("affected_files") or []
                     modified_files.extend(str(path) for path in affected)
+                    patch_succeeded = True
                     if has_seen_test_failure:
                         repair_rounds += 1
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -148,17 +160,64 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     latest_test = TestRunResult.model_validate_json(content)
                     if not latest_test.success:
                         has_seen_test_failure = True
+                    else:
+                        explicit_test_passed = True
                 except ValueError:
                     logger.warning("Could not parse run_tests result: %s", content[:500])
             tool_messages.append(ToolMessage(content=content, tool_call_id=call_id))
-        logger.info("Executed %d tool call(s) (step %d)", len(tool_messages), state["step_count"])
+
+        final_answer = state.get("final_answer", "")
+        current_step = "tools"
+        run_tests_tool = tools_by_name.get("run_tests")
+        if patch_succeeded and run_tests_tool is not None:
+            auto_call_id = f"auto_test_{uuid.uuid4().hex[:12]}"
+            auto_call = {
+                "name": "run_tests",
+                "args": {"tool": "maven"},
+                "id": auto_call_id,
+            }
+            tool_messages.append(
+                AIMessage(content="", tool_calls=[auto_call])
+            )
+            try:
+                auto_content = str(run_tests_tool.invoke({"tool": "maven"}))
+                latest_test = TestRunResult.model_validate_json(auto_content)
+                if not latest_test.success:
+                    has_seen_test_failure = True
+            except Exception as exc:
+                logger.exception("Automatic Maven test failed to execute")
+                auto_content = f"[tool error] 自动 Maven 测试执行失败：{exc}"
+            tool_messages.append(
+                ToolMessage(content=auto_content, tool_call_id=auto_call_id)
+            )
+
+            if latest_test is not None and latest_test.success:
+                current_step = "finished"
+                final_answer = "Maven 测试通过，自动修复闭环已结束。"
+            elif repair_rounds >= MAX_REPAIR_ROUNDS:
+                current_step = "finished"
+                final_answer = (
+                    f"已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复，"
+                    "Maven 测试仍未通过。"
+                )
+        elif explicit_test_passed:
+            current_step = "finished"
+            final_answer = "Maven 测试通过，自动修复闭环已结束。"
+
+        logger.info(
+            "Executed %d message(s) (step %d, auto_test=%s)",
+            len(tool_messages),
+            state["step_count"],
+            patch_succeeded,
+        )
         return {
             "messages": tool_messages,
-            "current_step": "tools",
+            "current_step": current_step,
             "modified_files": modified_files,
             "test_result": latest_test,
             "has_seen_test_failure": has_seen_test_failure,
             "repair_rounds": repair_rounds,
+            "final_answer": final_answer,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -169,12 +228,19 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
             return "tools"
         return "end"
 
+    def route_after_tools(state: AgentState) -> Literal["agent", "end"]:
+        return "end" if state.get("current_step") == "finished" else "agent"
+
     builder = StateGraph(AgentState)
     builder.add_node("agent", agent_node)
     builder.add_node("tools", tools_node)
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", route_after_agent, {"tools": "tools", "end": END})
-    builder.add_edge("tools", "agent")
+    builder.add_conditional_edges(
+        "tools",
+        route_after_tools,
+        {"agent": "agent", "end": END},
+    )
     return builder.compile()
 
 

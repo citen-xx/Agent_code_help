@@ -9,9 +9,10 @@ Pipeline::
               |            |
               +---- no ----+--> END (final answer)
 
-The agent calls the LLM (with the read-only repo tools bound); tool results
-are appended to ``messages`` and the loop repeats until the LLM answers
-without tool calls, an error occurs, or the maximum step count is reached.
+The agent calls the LLM (with repository inspection and controlled test
+tools bound); tool results are appended to ``messages`` and the loop repeats
+until the LLM answers without tool calls, an error occurs, or the maximum
+step count is reached.
 
 Only hand-written nodes and edges are used — no high-level agent APIs.
 """
@@ -32,8 +33,10 @@ from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.state import AgentState
+from app.core.config import settings
 from app.llm.client import build_chat_model
 from app.schemas.agent import AnalyzeResponse
+from app.tools.build_tools import create_build_tools
 from app.tools.git_tools import create_git_tools
 from app.tools.registry import create_repo_tools
 
@@ -45,9 +48,12 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 300.0
 
 SYSTEM_PROMPT = (
     "You are a Java code analysis assistant. You can inspect a Java repository "
-    "with read-only tools: list_files, read_file, search_code, and (for a "
-    "workspace) git_status, git_diff, git_log, git_show. "
+    "and run its fixed tests. Available tools: list_files, read_file, search_code, and (for a "
+    "workspace) git_status, git_diff, git_log, git_show, detect_build_tools, "
+    "run_tests. run_tests executes only the fixed Maven/Gradle test lifecycle. "
     "Never modify or delete files, and never run shell commands. "
+    "When tests fail, inspect the reported output and relevant source files "
+    "before explaining the likely cause. "
     "Explore step by step, then give a concise final answer once you have "
     "enough information. Answer in the same language as the user's task."
 )
@@ -136,16 +142,23 @@ async def run_agent(
     workspace_id: str | None = None,
     workspace_manager=None,
 ) -> AnalyzeResponse:
-    """Run the agent loop for a task against a local repository (read-only).
+    """Run the agent loop for a task against a local repository.
 
-    The LLM is injected (tests pass a fake); when omitted it is built from
-    settings, which requires LLM_* to be configured in .env.
+    The Agent never edits source files. In workspace mode it may execute the
+    fixed Maven/Gradle test lifecycle. The LLM is injected (tests pass a fake);
+    when omitted it is built from settings, which requires LLM_* in .env.
     """
     model = model or build_chat_model()
     tools = create_repo_tools(repository_path)
     if workspace_id:
-        # read-only Git tools, bound to this workspace's repository only
+        # Git and build/test tools are bound to this workspace's repository only.
         tools += create_git_tools(workspace_id, repository_path, manager=workspace_manager)
+        tools += create_build_tools(
+            workspace_id,
+            repository_path,
+            manager=workspace_manager,
+            timeout_seconds=settings.BUILD_TEST_TIMEOUT_SECONDS,
+        )
     graph = build_agent_graph(model, tools, max_steps=max_steps)
 
     initial_state: AgentState = {

@@ -19,12 +19,12 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
-    """Run the code agent on a local repository (strictly read-only).
+    """Run the code agent on a local repository without source modification.
 
     Target is either a workspace_id (recommended) or a legacy
     repository_path. When a workspace_id is given, the repository path is
-    resolved by the workspace manager and the read-only Git tools are bound
-    to that workspace.
+    resolved by the workspace manager and Git/build tests are bound to that
+    workspace.
     """
     if request.workspace_id:
         try:

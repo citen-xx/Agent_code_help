@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.llm.client import LLMConfigError
 from app.main import create_app
 from app.workspace.manager import WorkspaceManager
+from tests.build_helpers import patch_popen
 from tests.fakes import FakeChatModel, tool_call
 
 
@@ -97,6 +98,68 @@ def test_analyze_with_workspace_id(workspace_root, origin_repo, monkeypatch):
     tool_contents = "\n".join(m.content for m in model.history[1] if isinstance(m, ToolMessage))
     assert "add order service" in tool_contents  # git_log ran on the workspace repo
     assert "public class Main" in tool_contents  # read_file ran on the workspace repo
+
+
+def test_analyze_can_run_tests_and_receive_failure_feedback(
+    workspace_root, origin_repo, monkeypatch
+):
+    manager = WorkspaceManager(workspace_root, allow_file_urls=True)
+    monkeypatch.setattr("app.workspace.manager.workspace_manager", manager)
+    info = manager.create(origin_repo.as_uri())
+    repository = Path(info.repository_path)
+    (repository / "pom.xml").write_text("<project/>", encoding="utf-8")
+    captured = patch_popen(
+        monkeypatch,
+        stdout="Tests run: 1, Failures: 1\nOrderServiceTest.shouldCreateOrder",
+        stderr="expected true but was false",
+        returncode=1,
+    )
+
+    model = FakeChatModel(
+        script=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "detect_build_tools",
+                        "args": {},
+                        "id": "call_detect",
+                    },
+                    {
+                        "name": "run_tests",
+                        "args": {"tool": "maven"},
+                        "id": "call_test",
+                    },
+                ],
+            ),
+            AIMessage(
+                content="测试失败发生在 OrderServiceTest.shouldCreateOrder。"
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.api.agent.build_chat_model", lambda: model)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/agent/analyze",
+            json={
+                "task": "运行测试并分析失败原因",
+                "workspace_id": info.workspace_id,
+            },
+        )
+
+    assert response.status_code == 200
+    tool_contents = "\n".join(
+        message.content
+        for message in model.history[1]
+        if isinstance(message, ToolMessage)
+    )
+    assert '"tool": "maven"' in tool_contents
+    assert '"exit_code": 1' in tool_contents
+    assert "OrderServiceTest.shouldCreateOrder" in tool_contents
+    assert "expected true but was false" in tool_contents
+    assert Path(captured["kwargs"]["cwd"]) == repository
+    assert captured["kwargs"]["shell"] is False
 
 
 def test_analyze_unknown_workspace_returns_404(workspace_root, monkeypatch):

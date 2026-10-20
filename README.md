@@ -9,14 +9,17 @@
 
 ## 当前阶段
 
-第三阶段：Git 仓库 Workspace + Git 只读工具：
+第四阶段：Maven / Gradle 受控执行与测试反馈：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
+- 构建系统识别：仅检查 Workspace 根目录的 Maven `pom.xml` 或 Gradle 构建文件
+- 受控测试执行：固定执行 Maven/Gradle 的 `test`，返回 exit code、stdout、stderr、超时和截断信息
+- Agent 工具：`detect_build_tools`、`run_tests`，失败输出会反馈给 LLM 用于定位原因
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：修改/删除代码、Shell 任意执行、Maven/Gradle、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。
+仍然禁止：修改/删除代码、任意 Shell、任意 Maven/Gradle 参数、Docker Sandbox、Tree-sitter、PostgreSQL、Redis、MCP、SSE。
 
 ## 推荐流程
 
@@ -53,11 +56,13 @@ java-code-agent/
 │  ├─ workspace/
 │  │  ├─ manager.py        # WorkspaceManager（隔离目录、URL/ref 校验）
 │  │  ├─ git.py            # 受控 Git CLI 封装（白名单参数 + 超时）
+│  │  ├─ build.py          # Maven/Gradle 检测与固定 test 执行
 │  │  └─ models.py         # WorkspaceInfo 模型
 │  ├─ tools/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
 │  │  ├─ registry.py       # 仓库工具 LangChain 封装
-│  │  └─ git_tools.py      # 只读 Git 工具（status/diff/log/show）
+│  │  ├─ git_tools.py      # 只读 Git 工具（status/diff/log/show）
+│  │  └─ build_tools.py    # 构建检测与测试执行工具
 │  └─ schemas/
 │     ├─ common.py         # 通用 Pydantic 模型
 │     ├─ agent.py          # /agent/analyze 请求/响应模型
@@ -106,6 +111,14 @@ LLM_MODEL=...
 > 未配置时调用 `/agent/analyze` 会返回 503 并提示缺少的配置项。
 
 配置完成后**无需修改任何代码**，重启服务即可使用真实 LLM。
+
+### 构建测试配置
+
+```env
+BUILD_TEST_TIMEOUT_SECONDS=300
+```
+
+该值控制单次 Maven/Gradle `test` 的超时时间，默认 300 秒。
 
 ## 接口
 
@@ -194,6 +207,40 @@ curl -X POST http://127.0.0.1:8000/agent/analyze \
 workspace 模式下 Agent 额外拥有 4 个只读 Git 工具（git_status / git_diff / git_log / git_show）。
 如果 Workspace 状态不是 `ready`，接口返回 409，不会启动 Agent。
 
+### 运行测试
+
+Agent 在 Workspace 模式下可以调用：
+
+- `detect_build_tools`：返回根目录检测到的 Maven/Gradle 项目、构建文件、固定命令和是否使用 Wrapper
+- `run_tests`：参数只能是 `{"tool": "auto" | "maven" | "gradle"}`
+
+示例任务：
+
+```bash
+curl -X POST http://127.0.0.1:8000/agent/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"task": "运行测试并分析失败原因", "workspace_id": "1a2b3c4d5e6f"}'
+```
+
+`run_tests` 返回结构化 JSON：
+
+```json
+{
+  "tool": "maven",
+  "command": ["mvn.cmd", "test"],
+  "exit_code": 1,
+  "stdout": "Tests run: 1, Failures: 1 ...",
+  "stderr": "",
+  "success": false,
+  "timed_out": false,
+  "truncated": false,
+  "error": null,
+  "duration_seconds": 3.42
+}
+```
+
+检测到多个构建工具时，`auto` 会拒绝猜测，需显式指定 `maven` 或 `gradle`。
+
 ## 安全说明
 
 - Workspace 只能创建在 `.workspaces/` 下；`workspace_id` 严格校验为 12 位 hex，路径穿越无法构造
@@ -203,6 +250,10 @@ workspace 模式下 Agent 额外拥有 4 个只读 Git 工具（git_status / git
 - `POST /workspaces` 默认仅接受 HTTPS，拒绝含用户名/密码的 URL；`file://` 只能由测试代码显式开启
 - URL / branch / commit 均有基本校验，ref 不允许选项注入或 revision range；clone 默认超时 300 秒
 - `git_diff` / `git_show` 最大输出 20,000 字符，`git_status` 最多 100 条记录，`git_log` 最多 50 条；截断时明确标记
+- 测试命令固定为 Maven/Gradle 的 `test`，不接受额外命令、参数、文件路径或 Shell；Gradle 固定使用 `--no-daemon`
+- 测试进程在 Workspace repository 目录启动，使用 `shell=False`、非交互 stdin 和超时；超时会尝试终止整个进程树
+- stdout / stderr 各自最多保留 20,000 字符，超出时明确标记；测试超时默认 300 秒，可通过 `BUILD_TEST_TIMEOUT_SECONDS` 调整
+- Maven/Gradle 测试会执行仓库中的构建脚本和测试代码，这是该阶段的既定能力；当前没有容器级隔离，只应分析受信任的公开仓库
 
 ## 运行测试
 
@@ -212,8 +263,14 @@ uv run pytest
 
 所有测试使用本地临时 Git 仓库与 Fake LLM，完全离线、不消耗任何 API 额度。
 
+真实 Maven 验收（需要本机 Maven、网络及首次依赖下载，不属于 pytest）：
+
+```bash
+uv run python scripts/acceptance_build.py
+```
+
 ## 后续计划
 
+- 代码修改 + 测试闭环（`apply_patch` 类受控编辑）
 - Tree-sitter 语法级代码分析
-- 受控的代码修改能力
 - 持久化、检索等基础设施（按需逐步加入）

@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # --- Workspace ---
     WORKSPACE_ROOT: str = ".workspaces"
     WORKSPACE_CLONE_TIMEOUT_SECONDS: float = 300.0
+    BUILD_TEST_TIMEOUT_SECONDS: float = 300.0
 
 
 @lru_cache

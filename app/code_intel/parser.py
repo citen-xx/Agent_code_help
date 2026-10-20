@@ -12,6 +12,7 @@ from tree_sitter import Language, Node, Parser
 import tree_sitter_java
 
 from app.code_intel.models import (
+    JavaCallEdge,
     JavaParseDiagnostic,
     JavaReference,
     JavaSymbol,
@@ -49,6 +50,7 @@ _CONTAINER_NODES = {
 class ParsedJavaFile:
     symbols: list[JavaSymbol] = field(default_factory=list)
     references: list[JavaReference] = field(default_factory=list)
+    calls: list[JavaCallEdge] = field(default_factory=list)
     diagnostics: list[JavaParseDiagnostic] = field(default_factory=list)
 
 
@@ -212,12 +214,63 @@ def _add_record_components(
             )
 
 
+def _collect_method_calls(
+    node: Node,
+    source: bytes,
+    file_path: str,
+    containing_class: str | None,
+    containing_method: str,
+    caller_signature: str,
+    caller_line_start: int,
+    caller_line_end: int,
+    calls: list[JavaCallEdge],
+) -> None:
+    for child in node.named_children:
+        if child.type == "method_invocation":
+            name_node = child.child_by_field_name("name")
+            if name_node is not None:
+                object_node = child.child_by_field_name("object")
+                qualifier = _node_text(object_node, source) if object_node else None
+                caller_symbol = (
+                    f"{containing_class}.{containing_method}"
+                    if containing_class
+                    else containing_method
+                )
+                calls.append(
+                    JavaCallEdge(
+                        caller_symbol=caller_symbol,
+                        callee_name=_node_text(name_node, source),
+                        file_path=file_path,
+                        line=_line(child),
+                        column=child.start_point[1] + 1,
+                        containing_class=containing_class,
+                        containing_method=containing_method,
+                        callee_qualifier=qualifier,
+                        caller_signature=caller_signature,
+                        caller_line_start=caller_line_start,
+                        caller_line_end=caller_line_end,
+                    )
+                )
+        _collect_method_calls(
+            child,
+            source,
+            file_path,
+            containing_class,
+            containing_method,
+            caller_signature,
+            caller_line_start,
+            caller_line_end,
+            calls,
+        )
+
+
 def _walk_declarations(
     node: Node,
     source: bytes,
     file_path: str,
     class_stack: list[str],
     symbols: list[JavaSymbol],
+    calls: list[JavaCallEdge],
     definition_offsets: set[tuple[int, int]],
 ) -> None:
     containing_class = ".".join(class_stack) or None
@@ -255,6 +308,7 @@ def _walk_declarations(
                     file_path,
                     [*class_stack, name],
                     symbols,
+                    calls,
                     definition_offsets,
                 )
         elif child.type in _METHOD_DECLARATIONS | _CONSTRUCTOR_DECLARATIONS:
@@ -277,6 +331,19 @@ def _walk_declarations(
                 source=source,
                 containing_class=containing_class,
             )
+            body = child.child_by_field_name("body")
+            if body is not None:
+                _collect_method_calls(
+                    body,
+                    source,
+                    file_path,
+                    containing_class,
+                    _node_text(name_node, source),
+                    _signature(child, source),
+                    _line(child),
+                    _line(child, end=True),
+                    calls,
+                )
         elif child.type in _FIELD_DECLARATIONS:
             if class_stack:
                 _add_field_symbols(
@@ -294,6 +361,7 @@ def _walk_declarations(
                 file_path,
                 class_stack,
                 symbols,
+                calls,
                 definition_offsets,
             )
 
@@ -376,6 +444,7 @@ def parse_java_source(file_path: str, source: bytes) -> ParsedJavaFile:
         )
 
     symbols: list[JavaSymbol] = []
+    calls: list[JavaCallEdge] = []
     definition_offsets: set[tuple[int, int]] = set()
     _extract_package_and_imports(root, source, file_path, symbols)
     _walk_declarations(
@@ -384,6 +453,7 @@ def parse_java_source(file_path: str, source: bytes) -> ParsedJavaFile:
         file_path,
         [],
         symbols,
+        calls,
         definition_offsets,
     )
     references = _collect_references(
@@ -393,7 +463,7 @@ def parse_java_source(file_path: str, source: bytes) -> ParsedJavaFile:
         file_path,
         definition_offsets,
     )
-    return ParsedJavaFile(symbols=symbols, references=references)
+    return ParsedJavaFile(symbols=symbols, references=references, calls=calls)
 
 
 def parse_java_file(repository_path: str | Path, relative_path: str) -> ParsedJavaFile:

@@ -53,6 +53,32 @@ class _FindReferencesArgs(BaseModel):
     limit: int = Field(default=200, ge=1, le=500)
 
 
+class _FindCallersArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method_name: str = Field(min_length=1)
+    class_name: str | None = None
+    file_path: str | None = None
+    limit: int = Field(default=200, ge=1, le=500)
+
+
+class _FindCalleesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method_name: str = Field(min_length=1)
+    class_name: str | None = None
+    file_path: str | None = None
+    limit: int = Field(default=200, ge=1, le=500)
+
+
+class _AnalyzeImpactArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, description="Class or method name.")
+    depth: int = Field(default=1, ge=1, le=2)
+    limit: int = Field(default=200, ge=1, le=500)
+
+
 def create_code_intel_tools(
     workspace_id: str,
     repository_path: str | Path,
@@ -123,6 +149,51 @@ def create_code_intel_tools(
             raise ToolError(f"Java 引用查询失败: {exc}") from exc
         return result.model_dump_json(indent=2)
 
+    def _find_callers(
+        method_name: str,
+        class_name: str | None = None,
+        file_path: str | None = None,
+        limit: int = 200,
+    ) -> str:
+        try:
+            result = _index().find_callers(
+                method_name,
+                class_name=class_name,
+                file_path=file_path,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise ToolError(f"Java caller 查询失败: {exc}") from exc
+        return result.model_dump_json(indent=2)
+
+    def _find_callees(
+        method_name: str,
+        class_name: str | None = None,
+        file_path: str | None = None,
+        limit: int = 200,
+    ) -> str:
+        try:
+            result = _index().find_callees(
+                method_name,
+                class_name=class_name,
+                file_path=file_path,
+                limit=limit,
+            )
+        except Exception as exc:
+            raise ToolError(f"Java callee 查询失败: {exc}") from exc
+        return result.model_dump_json(indent=2)
+
+    def _analyze_impact(
+        name: str,
+        depth: int = 1,
+        limit: int = 200,
+    ) -> str:
+        try:
+            result = _index().analyze_impact(name, depth=depth, limit=limit)
+        except Exception as exc:
+            raise ToolError(f"Java impact 分析失败: {exc}") from exc
+        return result.model_dump_json(indent=2)
+
     logger.debug("Binding Java code intelligence to workspace %s", workspace_id)
     return [
         StructuredTool.from_function(
@@ -151,5 +222,32 @@ def create_code_intel_tools(
             ),
             func=_find_references,
             args_schema=_FindReferencesArgs,
+        ),
+        StructuredTool.from_function(
+            name="find_callers",
+            description=(
+                "Find methods that call the specified Java method. Returns call "
+                "sites, caller class/method, candidates, and ambiguity flags."
+            ),
+            func=_find_callers,
+            args_schema=_FindCallersArgs,
+        ),
+        StructuredTool.from_function(
+            name="find_callees",
+            description=(
+                "Find method calls made inside the specified Java method. Returns "
+                "structured call sites and candidate callee definitions."
+            ),
+            func=_find_callees,
+            args_schema=_FindCalleesArgs,
+        ),
+        StructuredTool.from_function(
+            name="analyze_impact",
+            description=(
+                "Analyze likely impacted callers, test references, and related "
+                "same-class methods for a class or method. Depth is limited to 2."
+            ),
+            func=_analyze_impact,
+            args_schema=_AnalyzeImpactArgs,
         ),
     ]

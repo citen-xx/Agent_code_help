@@ -9,7 +9,7 @@
 
 ## 当前阶段
 
-第七阶段：Java Code Intelligence（Tree-sitter 只读分析）：
+第八阶段：Java 调用图与 Impacted Code Analysis：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
@@ -20,10 +20,12 @@
 - Maven 修复闭环：定位 → 读取 → 修改 → 自动 Docker Maven test → 分析失败 → 读取/再修改；测试通过立即结束，最多允许 3 轮修复 Patch
 - Java 符号索引：Tree-sitter 解析 Workspace 内 `.java`，提取 package/import/类/接口/枚举/record/方法/构造器/字段
 - 符号工具：`list_symbols`、`find_symbol`、`find_references`，支持重载、同名定义、嵌套类与行号定位
+- 静态调用图：识别 `foo()`、`this.foo()`、`obj.foo()`、`ClassName.foo()`，记录调用方、被调方、文件、行列和候选定义
+- Impact 分析：从类或方法出发，默认分析 1 层、最多 2 层调用方，并返回测试代码引用和同类相关方法
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、PostgreSQL、Redis、MCP、SSE、LSP、javac 类型解析、JAR 跨依赖分析和调用图。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
+仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、PostgreSQL、Redis、MCP、SSE、LSP、javac 类型解析、JAR 跨依赖分析、动态调用、Reflection、Spring Bean 依赖图和自动修复规划器。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
 
 ## 推荐流程
 
@@ -278,6 +280,9 @@ Workspace 模式下的 Agent 优先使用以下只读工具：
 - `list_symbols`：按文件、类名或符号类型查看符号
 - `find_symbol`：按名称查找类、接口、枚举、record、方法、构造器、字段
 - `find_references`：按标识符名称查找引用位置，可选择包含定义
+- `find_callers`：查找调用指定方法的全部调用点
+- `find_callees`：查找指定方法内部调用的方法
+- `analyze_impact`：分析类或方法的潜在影响范围
 
 索引特性：
 
@@ -288,6 +293,10 @@ Workspace 模式下的 Agent 优先使用以下只读工具：
 - Workspace 删除时同步清理内存索引
 - 单个文件 Tree-sitter 语法错误只跳过该文件，并在查询结果 `diagnostics` 中返回文件和行列
 - `find_references` 是语法节点 + 标识符匹配，不进行 javac 类型解析
+- 调用图同样是静态近似：`this` 和明确类名限定会优先匹配同类/目标类；对象变量调用只按方法名生成候选
+- 重载或多个候选定义无法唯一确定时返回 `candidates` 并设置 `ambiguous=true`，不会伪造唯一调用关系
+- `analyze_impact` 默认深度 1，最大 2；结果区分主代码与 `src/test/java`，并限制返回数量避免递归爆炸
+- `apply_patch` 成功后同一批受影响 Java 文件会同时刷新符号、引用和调用关系
 ### 运行测试
 
 Agent 在 Workspace 模式下可以调用：
@@ -368,6 +377,13 @@ uv run python scripts/acceptance_patch_loop.py
 
 ```bash
 uv run python scripts/acceptance_code_intel.py
+```
+
+真实 Java 调用图 / Impact 验收（包含 Patch 前后两轮 Docker Maven）：
+
+```bash
+$env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
+uv run python scripts/acceptance_call_graph.py
 ```
 
 ## 后续计划

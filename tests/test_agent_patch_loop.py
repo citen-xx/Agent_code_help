@@ -55,6 +55,34 @@ def _tool_calls_named(name: str, args: dict, call_id: str) -> AIMessage:
     )
 
 
+def _plan_call(reason: str | None = None, call_id: str = "plan") -> AIMessage:
+    return _tool_calls_named(
+        "create_repair_plan",
+        {
+            "problem_summary": "修复 Main 中的测试失败",
+            "target_symbols": ["Main"],
+            "impacted_files": ["Main.java"],
+            "impacted_tests": [],
+            "planned_changes": [
+                {
+                    "file_path": "Main.java",
+                    "target_symbol": "Main",
+                    "change_description": "更新 Main 实现",
+                    "reason": "使 Maven 测试通过",
+                }
+            ],
+            "risk_notes": ["改动范围限于 Main.java"],
+            "validation_plan": {
+                "run_maven_test": True,
+                "focus": ["Main 相关测试与调用方"],
+                "notes": [],
+            },
+            "revision_reason": reason,
+        },
+        call_id,
+    )
+
+
 def test_agent_patch_then_passing_test_returns_summary_diff(
     workspace_root, origin_repo, monkeypatch
 ):
@@ -65,6 +93,7 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     )
     model = FakeChatModel(
         script=[
+            _plan_call(),
             _patch_only(0),
             AIMessage(content="已修复并通过测试。"),
         ]
@@ -83,6 +112,10 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     assert body["repair_rounds"] == 0
     assert body["test_result"]["success"] is True
     assert body["test_result"]["exit_code"] == 0
+    assert body["repair_plan"]["problem_summary"] == "修复 Main 中的测试失败"
+    assert body["repair_plan"]["impacted_files"] == ["Main.java"]
+    assert body["repair_plan"]["impacted_tests"] == []
+    assert len(body["plan_revisions"]) == 1
     assert "diff --git" in body["diff"]
     assert "### 修改摘要" in body["answer"]
     assert "### 测试结果" in body["answer"]
@@ -95,7 +128,7 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     assert docker_command[docker_command.index("--network") + 1] == "none"
     assert docker_command.count("--mount") == 1
     assert docker_command[-2:] == ["mvn", "test"]
-    assert model.calls == 1  # passing test ends the graph immediately
+    assert model.calls == 2  # plan + patch; passing test ends immediately
 
 
 def test_agent_repairs_after_failure_and_receives_feedback(
@@ -119,8 +152,10 @@ def test_agent_repairs_after_failure_and_receives_feedback(
     )
     model = FakeChatModel(
         script=[
+            _plan_call(call_id="plan_1"),
             _patch_only(0),
             _tool_calls_named("read_file", {"path": "Main.java"}, "read_after_fail"),
+            _plan_call("首次测试失败，调整 Main 实现", call_id="plan_2"),
             _patch_only(1),
             AIMessage(content="第一次测试失败，第二次修复后通过。"),
         ]
@@ -137,6 +172,11 @@ def test_agent_repairs_after_failure_and_receives_feedback(
     body = response.json()
     assert body["repair_rounds"] == 1
     assert body["test_result"]["success"] is True
+    assert len(body["plan_revisions"]) == 2
+    assert body["plan_revisions"][1]["failure_summary"]
+    assert body["plan_revisions"][1]["modified_files"] == ["Main.java"]
+    assert "首次测试失败" in body["plan_revisions"][1]["reason"]
+    assert "diff --git" in body["plan_revisions"][1]["diff"]
     assert "// step2" in (repo / "Main.java").read_text(encoding="utf-8")
     feedback = "\n".join(
         message.content
@@ -147,7 +187,7 @@ def test_agent_repairs_after_failure_and_receives_feedback(
     assert "MainTest.fails" in feedback
     assert "expected true" in feedback
     assert "public class Main" in feedback  # LLM could read code after failure
-    assert model.calls == 3
+    assert model.calls == 5
 
 
 def test_agent_stops_after_three_repair_rounds(
@@ -162,9 +202,13 @@ def test_agent_stops_after_three_repair_rounds(
     )
     model = FakeChatModel(
         script=[
+            _plan_call(call_id="plan_0"),
             _patch_only(0),
+            _plan_call("第一轮失败", call_id="plan_1"),
             _patch_only(1),
+            _plan_call("第二轮失败", call_id="plan_2"),
             _patch_only(2),
+            _plan_call("第三轮失败", call_id="plan_3"),
             _patch_only(3),
             AIMessage(content="已完成三轮自动修复，测试仍未通过。"),
         ]
@@ -181,6 +225,8 @@ def test_agent_stops_after_three_repair_rounds(
     body = response.json()
     assert body["repair_rounds"] == 3
     assert body["test_result"]["success"] is False
+    assert len(body["plan_revisions"]) == 4
+    assert [item["revision"] for item in body["plan_revisions"]] == [1, 2, 3, 4]
     content = (repo / "Main.java").read_text(encoding="utf-8")
     assert "// step4" in content
     assert "// step5" not in content
@@ -192,7 +238,7 @@ def test_agent_stops_after_three_repair_rounds(
     )
     assert "Tests run: 1, Failures: 1" in feedback
     assert "已达到最多 3 轮自动修复" in body["answer"]
-    assert model.calls == 4
+    assert model.calls == 8
 
 
 def test_agent_survives_docker_unavailable(
@@ -205,6 +251,7 @@ def test_agent_survives_docker_unavailable(
     )
     model = FakeChatModel(
         script=[
+            _plan_call(),
             _patch_only(0),
             AIMessage(content="Docker 不可用，保留修改并报告错误。"),
         ]
@@ -224,4 +271,4 @@ def test_agent_survives_docker_unavailable(
     assert body["test_result"]["exit_code"] is None
     assert "Docker 守护进程不可用" in body["test_result"]["error"]
     assert "// step1" in (repo / "Main.java").read_text(encoding="utf-8")
-    assert model.calls == 2
+    assert model.calls == 3

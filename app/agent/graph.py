@@ -38,6 +38,8 @@ from app.agent.state import AgentState
 from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
 from app.llm.client import build_chat_model
+from app.repair.models import CreateRepairPlanRequest, PlanRevision, RepairPlan
+from app.repair.tools import create_repair_plan_tools
 from app.schemas.agent import AnalyzeResponse
 from app.tools.build_tools import create_build_tools
 from app.tools.git_tools import create_git_tools
@@ -60,16 +62,28 @@ SYSTEM_PROMPT = (
     "locate declarations and usages, and call analyze_impact before changing a "
     "method when its blast radius matters. Use find_callers/find_callees for call "
     "relationships, then read_file or search_code only as needed. "
-    "For a code change, follow this order: locate the problem, read the relevant "
-    "code, use apply_patch to edit existing UTF-8 files. A successful patch "
-    "automatically runs the fixed Maven test. Inspect failures, read code again, "
-    "and patch again when needed. "
+    "Before the first apply_patch, create a structured plan with create_repair_plan. "
+    "After every failed Maven test, revise the plan with create_repair_plan and a "
+    "revision_reason before patching again. For a code change, follow this order: "
+    "locate the problem, read relevant code, create the plan, use apply_patch to "
+    "edit existing UTF-8 files. A successful patch automatically runs the fixed "
+    "Maven test. Inspect failures, read code again, revise the plan, and patch again. "
     "apply_patch requires exact old_text/new_text replacements and is atomic. "
     "Never modify files outside apply_patch, never run shell commands, and never "
     "invent Maven arguments. At most three repair patches are allowed after the "
     "first failed test. When tests pass, summarize the change and mention the "
     "test result and diff. Answer in the same language as the user's task."
 )
+
+
+def _test_failure_summary(result: TestRunResult) -> str:
+    parts = [
+        result.error or "",
+        (result.stderr or "")[-1000:],
+        (result.stdout or "")[-1000:],
+    ]
+    summary = "\n".join(part for part in parts if part).strip()
+    return summary[:2000]
 
 
 def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: int = DEFAULT_MAX_STEPS):
@@ -116,6 +130,11 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
         latest_test: TestRunResult | None = state.get("test_result")
         has_seen_test_failure = state.get("has_seen_test_failure", False)
         repair_rounds = state.get("repair_rounds", 0)
+        repair_plan = state.get("repair_plan")
+        plan_revisions: list[PlanRevision] = []
+        plan_stale = state.get("plan_stale", True)
+        latest_patch_diff = state.get("latest_patch_diff", "")
+        last_failure_summary = state.get("last_failure_summary")
         calls = getattr(last, "tool_calls", None) or []
         patch_requested = any(call.get("name") == "apply_patch" for call in calls)
         patch_succeeded = False
@@ -137,6 +156,20 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     f"[tool error] 已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复上限，"
                     "禁止继续 apply_patch。请基于现有 diff 和测试结果给出最终说明。"
                 )
+            elif name == "apply_patch" and (repair_plan is None or plan_stale):
+                content = (
+                    "[planner required] apply_patch 前必须先调用 create_repair_plan；"
+                    "Maven 失败后必须提交带 revision_reason 的修订计划。"
+                )
+            elif (
+                name == "create_repair_plan"
+                and repair_plan is not None
+                and not args.get("revision_reason")
+            ):
+                content = (
+                    "[planner required] 更新已有 Repair Plan 时必须提供 "
+                    "revision_reason，说明上一次失败和本轮调整。"
+                )
             elif name == "run_tests" and patch_requested:
                 content = (
                     "[auto test] 本批包含 apply_patch，显式 run_tests 已跳过；"
@@ -156,15 +189,59 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     affected = patch_body.get("affected_files") or []
                     modified_files.extend(str(path) for path in affected)
                     patch_succeeded = True
+                    latest_patch_diff = str(patch_body.get("diff") or latest_patch_diff)
                     if has_seen_test_failure:
                         repair_rounds += 1
                 except (TypeError, ValueError, json.JSONDecodeError):
                     logger.warning("Could not parse apply_patch result: %s", content[:500])
+            elif invocation_succeeded and name == "create_repair_plan":
+                try:
+                    request = CreateRepairPlanRequest.model_validate_json(content)
+                    plan = RepairPlan.model_validate(
+                        request.model_dump(exclude={"revision_reason"})
+                    )
+                    reason = request.revision_reason or "initial plan"
+                    revision_number = (
+                        len(state.get("plan_revisions", []))
+                        + len(plan_revisions)
+                        + 1
+                    )
+                    plan_revisions.append(
+                        PlanRevision(
+                            revision=revision_number,
+                            reason=reason,
+                            plan=plan,
+                            modified_files=list(
+                                dict.fromkeys(
+                                    [
+                                        *state.get("modified_files", []),
+                                        *modified_files,
+                                    ]
+                                )
+                            ),
+                            failure_summary=(
+                                last_failure_summary
+                                if last_failure_summary
+                                and (repair_plan is not None or plan_stale)
+                                else None
+                            ),
+                            diff=str(state.get("latest_patch_diff", "")),
+                        )
+                    )
+                    repair_plan = plan
+                    plan_stale = False
+                except ValueError:
+                    logger.warning(
+                        "Could not parse create_repair_plan result: %s",
+                        content[:500],
+                    )
             elif invocation_succeeded and name == "run_tests":
                 try:
                     latest_test = TestRunResult.model_validate_json(content)
                     if not latest_test.success:
                         has_seen_test_failure = True
+                        plan_stale = True
+                        last_failure_summary = _test_failure_summary(latest_test)
                     else:
                         explicit_test_passed = True
                 except ValueError:
@@ -189,6 +266,8 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                 latest_test = TestRunResult.model_validate_json(auto_content)
                 if not latest_test.success:
                     has_seen_test_failure = True
+                    plan_stale = True
+                    last_failure_summary = _test_failure_summary(latest_test)
             except Exception as exc:
                 logger.exception("Automatic Maven test failed to execute")
                 auto_content = f"[tool error] 自动 Maven 测试执行失败：{exc}"
@@ -223,6 +302,11 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
             "has_seen_test_failure": has_seen_test_failure,
             "repair_rounds": repair_rounds,
             "final_answer": final_answer,
+            "repair_plan": repair_plan,
+            "plan_revisions": plan_revisions,
+            "plan_stale": plan_stale,
+            "latest_patch_diff": latest_patch_diff,
+            "last_failure_summary": last_failure_summary,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -274,6 +358,11 @@ async def run_agent(
             manager=workspace_manager,
         )
         tools += create_git_tools(workspace_id, repository_path, manager=workspace_manager)
+        tools += create_repair_plan_tools(
+            workspace_id,
+            repository_path,
+            manager=workspace_manager,
+        )
         tools += create_patch_tools(
             workspace_id,
             repository_path,
@@ -297,6 +386,11 @@ async def run_agent(
         "test_result": None,
         "has_seen_test_failure": False,
         "repair_rounds": 0,
+        "repair_plan": None,
+        "plan_revisions": [],
+        "plan_stale": True,
+        "latest_patch_diff": "",
+        "last_failure_summary": None,
     }
 
     logger.info("Agent run started (repo=%s, max_steps=%d)", repository_path, max_steps)
@@ -314,6 +408,8 @@ async def run_agent(
 
     modified_files = list(dict.fromkeys(result.get("modified_files", [])))
     latest_test = result.get("test_result")
+    repair_plan = result.get("repair_plan")
+    plan_revisions = result.get("plan_revisions", [])
     final_diff = ""
     if workspace_id and modified_files:
         try:
@@ -328,7 +424,7 @@ async def run_agent(
             )
 
     final_answer = result["final_answer"]
-    if workspace_id and (modified_files or latest_test):
+    if workspace_id and (modified_files or latest_test or repair_plan):
         report: list[str] = [final_answer, "", "### 修改摘要"]
         report.extend(f"- {path}" for path in modified_files)
         if not modified_files:
@@ -344,6 +440,21 @@ async def run_agent(
                 report.append(f"- 错误：{latest_test.error}")
         if final_diff:
             report.extend(["", "### 最终 Diff", "```diff", final_diff, "```"])
+        if repair_plan is not None:
+            report.extend(["", "### Repair Plan", repair_plan.problem_summary])
+            report.extend(
+                f"- {change.file_path}: {change.change_description}"
+                for change in repair_plan.planned_changes
+            )
+            report.append(
+                "- 验证：" + "; ".join(repair_plan.validation_plan.focus)
+            )
+        if plan_revisions:
+            report.extend(["", "### Plan Revisions"])
+            report.extend(
+                f"- Revision {revision.revision}: {revision.reason}"
+                for revision in plan_revisions
+            )
         final_answer = "\n".join(report)
 
     logger.info(
@@ -360,4 +471,6 @@ async def run_agent(
         repair_rounds=result.get("repair_rounds", 0),
         test_result=latest_test,
         diff=final_diff,
+        repair_plan=repair_plan,
+        plan_revisions=plan_revisions,
     )

@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.repair.models import PlanRevision, RepairPlan
 from app.workspace.models import TestRunResult
 
 
@@ -48,4 +49,12 @@ class AnalyzeResponse(BaseModel):
     diff: str = Field(
         default="",
         description="Current uncommitted diff after the Agent run.",
+    )
+    repair_plan: RepairPlan | None = Field(
+        default=None,
+        description="Latest structured repair plan.",
+    )
+    plan_revisions: list[PlanRevision] = Field(
+        default_factory=list,
+        description="Chronological repair-plan revision history.",
     )

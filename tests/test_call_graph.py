@@ -404,9 +404,43 @@ async def test_agent_prompt_tools_include_impact(workspace, manager):
     model = FakeChatModel(
         script=[
             tool_call(
+                "find_callers",
+                {"method_name": "multiply", "class_name": "Calculator"},
+                "callers_1",
+            ),
+            tool_call(
                 "analyze_impact",
                 {"name": "multiply", "depth": 2},
                 "impact_1",
+            ),
+            tool_call(
+                "create_repair_plan",
+                {
+                    "problem_summary": "修复 multiply 并验证上层调用",
+                    "target_symbols": ["Calculator.multiply"],
+                    "impacted_files": [
+                        "src/main/java/com/shop/Calculator.java"
+                    ],
+                    "impacted_tests": [
+                        "src/test/java/com/shop/CalculatorTest.java"
+                    ],
+                    "planned_changes": [
+                        {
+                            "file_path": "src/main/java/com/shop/Calculator.java",
+                            "target_symbol": "Calculator.multiply",
+                            "change_description": "调整 multiply 实现",
+                            "reason": "修复测试失败并保持调用方行为",
+                        }
+                    ],
+                    "risk_notes": ["关注 PriceService 和 OrderService"],
+                    "validation_plan": {
+                        "run_maven_test": True,
+                        "focus": ["CalculatorTest", "PriceService.calculate"],
+                        "notes": [],
+                    },
+                    "revision_reason": None,
+                },
+                "plan_1",
             ),
             AIMessage(content="影响分析完成。"),
         ]
@@ -418,11 +452,20 @@ async def test_agent_prompt_tools_include_impact(workspace, manager):
         workspace_id=workspace.workspace_id,
         workspace_manager=manager,
     )
-    assert result.answer == "影响分析完成。"
+    assert result.answer.startswith("影响分析完成。")
+    assert "### Repair Plan" in result.answer
     tool_messages = [
         message
-        for message in model.history[1]
+        for history in model.history
+        for message in history
         if isinstance(message, ToolMessage)
     ]
-    assert "impacted_callers" in tool_messages[0].content
-    assert "PriceService" in tool_messages[0].content
+    combined = "\n".join(message.content for message in tool_messages)
+    assert "impacted_callers" in combined
+    assert "PriceService" in combined
+    assert result.repair_plan is not None
+    assert result.repair_plan.impacted_files == [
+        "src/main/java/com/shop/Calculator.java"
+    ]
+    assert len(result.plan_revisions) == 1
+    assert model.calls == 4

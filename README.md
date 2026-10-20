@@ -9,7 +9,7 @@
 
 ## 当前阶段
 
-第八阶段：Java 调用图与 Impacted Code Analysis：
+第九阶段：Repair Planner（结构化修复计划编排）：
 
 - Workspace 管理：从 Git 仓库地址 clone 到隔离的 `.workspaces/<workspace_id>/repository/`，支持指定 branch / commit，并记录 `creating / ready / error` 状态
 - Git 只读工具：`git_status` / `git_diff` / `git_log` / `git_show`（输出长度限制 + 截断标记）
@@ -22,10 +22,12 @@
 - 符号工具：`list_symbols`、`find_symbol`、`find_references`，支持重载、同名定义、嵌套类与行号定位
 - 静态调用图：识别 `foo()`、`this.foo()`、`obj.foo()`、`ClassName.foo()`，记录调用方、被调方、文件、行列和候选定义
 - Impact 分析：从类或方法出发，默认分析 1 层、最多 2 层调用方，并返回测试代码引用和同类相关方法
+- Repair Planner：首次 Patch 前必须生成结构化计划；Maven 失败后必须修订计划再进入下一轮
+- 最终响应：返回 `repair_plan`、`plan_revisions`，并保留修改文件、测试结果、修复轮数和最终 Diff
 - 新接口：`POST /workspaces`、`GET /workspaces`、`GET /workspaces/{id}`、`DELETE /workspaces/{id}`
 - `/agent/analyze` 支持 `workspace_id`（推荐）与 `repository_path`（向后兼容）
 
-仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、PostgreSQL、Redis、MCP、SSE、LSP、javac 类型解析、JAR 跨依赖分析、动态调用、Reflection、Spring Bean 依赖图和自动修复规划器。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
+仍然禁止：任意 Shell、任意 Maven 参数、文件创建/删除、多 Agent 协作、自动 Commit/Push/PR、PostgreSQL、Redis、MCP、SSE、LSP、javac 类型解析、JAR 跨依赖分析、动态调用、Reflection、Spring Bean 依赖图、Embedding 和 RAG。Gradle 能力保持现状，不再扩展；后续闭环只围绕 Maven。
 
 ## 推荐流程
 
@@ -70,6 +72,9 @@ java-code-agent/
 │  │  ├─ index.py          # Workspace 级内存索引与增量刷新
 │  │  ├─ registry.py       # 按 workspace_id 管理索引生命周期
 │  │  └─ tools.py          # list_symbols/find_symbol/find_references
+│  ├─ repair/
+│  │  ├─ models.py         # Repair Plan 与修订历史模型
+│  │  └─ tools.py          # 结构化只读计划工具
 │  ├─ tools/
 │  │  ├─ repo.py           # 只读仓库工具（list_files/read_file/search_code）
 │  │  ├─ registry.py       # 仓库工具 LangChain 封装
@@ -273,6 +278,53 @@ Workspace 模式下 Agent 可以调用 `apply_patch`，输入为结构化精确�
 - `test_result`：最近一次测试的结构化结果
 - `diff`：运行结束时的 Git Diff
 
+### Repair Planner
+
+Agent 必须按以下顺序执行代码修复：
+
+```text
+问题分析
+  ↓
+Code Intelligence / Impact
+  ↓
+create_repair_plan
+  ↓
+读取目标代码
+  ↓
+apply_patch
+  ↓
+Docker Maven test
+```
+
+计划包含：
+
+- `problem_summary`
+- `target_symbols`
+- `impacted_files`
+- `impacted_tests`
+- `planned_changes`（文件、目标符号、修改内容、原因）
+- `risk_notes`
+- `validation_plan`（必须要求 Maven test，并列出重点测试/调用方）
+
+强制规则：
+
+- 首次 `apply_patch` 前没有计划会被 Graph 拒绝。
+- Maven 测试失败后当前计划会标记过期，下一次 Patch 前必须重新调用 `create_repair_plan` 并提供 `revision_reason`。
+- `plan_revisions` 保留旧计划、已修改文件、失败摘要、当前 Diff 和调整原因。
+- Maven 自动修复仍最多 3 轮。
+- Code Intelligence 信息不足时可回退 `read_file` / `search_code`，但不能伪造符号或调用关系。
+- 旧 `repository_path` 模式仍只读，不提供 Planner 或 Patch。
+
+最终响应字段：
+
+- `repair_plan`
+- `plan_revisions`
+- `answer`
+- `modified_files`
+- `repair_rounds`
+- `test_result`
+- `diff`
+
 ### Java Code Intelligence
 
 Workspace 模式下的 Agent 优先使用以下只读工具：
@@ -384,6 +436,13 @@ uv run python scripts/acceptance_code_intel.py
 ```bash
 $env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
 uv run python scripts/acceptance_call_graph.py
+```
+
+真实 Repair Planner 验收（真实 LLM + Controller → Service → Calculator + Docker Maven）：
+
+```bash
+$env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
+uv run python scripts/acceptance_repair_planner.py
 ```
 
 ## 后续计划

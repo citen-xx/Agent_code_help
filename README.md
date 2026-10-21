@@ -340,17 +340,36 @@ Docker Maven test
 
 Benchmark 只负责“测 Agent”，不会向 Agent 提供正确答案、Patch、特殊 Prompt 或 task-specific 工具逻辑。Agent 使用与真实请求相同的 Repair Planner + Code Intelligence + apply_patch + Docker Maven 流程。
 
+### V1 / V2 区别
+
+- V1：10 个小型单 Bug Fixture，适合回归和快速基线。
+- V2：15 个更复杂 Fixture，包含 6 个 medium、9 个 hard。
+- V2 覆盖多文件修改、Service/Repository 协同、Controller→Service→Domain、异常、Optional、Stream、状态机、equals/hashCode、DTO、继承/重载、跨 package、回归冲突和隐藏验收测试。
+- V2 中有两个 30+ Java 文件、多 package、多测试类的大型 Maven 项目。
+- V2 的任务不会修改 V1 的 metadata 或 bundle。
+
 Fixture：
 
 - `evaluation/fixtures/<task_id>/`：独立 Maven 项目源码
 - `evaluation/fixtures/<task_id>/repo.bundle`：固定离线 Git 仓库 bundle
 - `evaluation/tasks.json`：task metadata 和固定 `base_commit`
+- `evaluation/fixtures/v2/`、`evaluation/tasks_v2.json`：V2 独立任务集
+- `evaluation/hidden_tests/v2/`：隐藏验收测试，不进入 public bundle
+
+隐藏测试机制：
+
+- Agent Workspace 中只有公开源码和公开测试。
+- Hidden tests 不在 Agent Prompt、bundle、read/search/index 可见范围内。
+- Agent 完成后，Runner 将最终代码复制到独立临时目录，再注入 hidden tests。
+- 只有公开 Maven tests 和 hidden Maven tests 同时通过，`success=true`。
 
 运行全部任务：
 
 ```bash
 $env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
-uv run python -m app.evaluation run
+uv run python -m app.evaluation run --suite v1
+uv run python -m app.evaluation run --suite v2
+uv run python -m app.evaluation run --suite all
 ```
 
 运行单个任务：
@@ -373,7 +392,13 @@ Passed
 Failed
 Success rate
 Average repair rounds
+Average plan revisions
+Average changed files
+Average diff size
 Average duration
+Public test success rate
+Hidden test success rate
+Success rate by difficulty
 LLM calls
 Tokens
 Estimated cost (provider 不支持时为 unavailable)
@@ -390,17 +415,37 @@ Estimated cost (provider 不支持时为 unavailable)
 
 成功标准只看最终独立 Maven test 是否通过，不信任 Agent 自述。单个任务失败会记录原因与 Agent 最终输出，然后继续执行后续任务。
 
+V2 结果还会记录：
+
+- `public_tests_passed`
+- `hidden_tests_passed`
+- `hidden_failure_summary`
+- `changed_file_count`
+- `diff_lines_added`
+- `diff_lines_removed`
+- 是否修改无关文件、测试文件或构建文件
+
+生成 V2 失败分析：
+
+```bash
+uv run python -m app.evaluation analyze \
+  --report evaluation/results/<timestamp>.json \
+  --output evaluation/failure-analysis.md
+```
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash
 uv run python scripts/build_benchmark_assets.py
+uv run python scripts/build_benchmark_v2_assets.py
 ```
 
 校验全部 Fixture 初始测试失败（需要 Docker）：
 
 ```bash
 $env:DOCKER_MAVEN_IMAGE = "java-code-agent-maven-fixture:local"
-uv run python scripts/validate_benchmark_fixtures.py
+uv run python scripts/validate_benchmark_fixtures.py --suite v1
+uv run python scripts/validate_benchmark_fixtures.py --suite v2
 ```
 
 ### Java Code Intelligence

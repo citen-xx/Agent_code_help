@@ -1,0 +1,281 @@
+[
+  {
+    "task_id": "v2-account-repository",
+    "title": "Account service and repository withdrawal",
+    "description": "Repository and service must enforce balance invariants.",
+    "repository": "evaluation/fixtures/v2/v2-account-repository/repo.bundle",
+    "base_commit": "b17743bd5b723788acd19f6c82d1bace13feb826",
+    "problem_statement": "账户取款后的余额不正确，并且超额取款没有被可靠拒绝。请修复 Service 与 Repository 的协同逻辑。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "service",
+      "repository",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-account-repository"
+  },
+  {
+    "task_id": "v2-exception-contract",
+    "title": "Exception contract across validator and service",
+    "description": "Invalid orders must surface the domain exception.",
+    "repository": "evaluation/fixtures/v2/v2-exception-contract/repo.bundle",
+    "base_commit": "78cfbeb825b0a988f74717d9935ea2ee2580ce8c",
+    "problem_statement": "无效订单目前没有向调用方暴露预期异常，错误处理契约被破坏。请修复验证器与服务之间的异常传播。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "exception",
+      "service",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-exception-contract"
+  },
+  {
+    "task_id": "v2-optional-profile",
+    "title": "Optional profile fallback",
+    "description": "Missing customer names must not throw.",
+    "repository": "evaluation/fixtures/v2/v2-optional-profile/repo.bundle",
+    "base_commit": "f964f46590253e23a4cffae640f995c59d5e7a2c",
+    "problem_statement": "客户资料缺失时显示名称会失败。请修复 Optional 链和默认值处理。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "optional",
+      "null-safety",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-optional-profile"
+  },
+  {
+    "task_id": "v2-stream-filter",
+    "title": "Stream filter and aggregation",
+    "description": "Regional totals use the wrong predicate.",
+    "repository": "evaluation/fixtures/v2/v2-stream-filter/repo.bundle",
+    "base_commit": "e23465453971af14ec70cb6538ca7afcc3185567",
+    "problem_statement": "区域销售汇总包含了错误的数据。请修复集合 Stream 过滤与聚合逻辑。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "stream",
+      "collection",
+      "multi-assertion"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-stream-filter"
+  },
+  {
+    "task_id": "v2-dto-mapping",
+    "title": "Entity to DTO mapping",
+    "description": "Mapper loses email and shifts the identifier.",
+    "repository": "evaluation/fixtures/v2/v2-dto-mapping/repo.bundle",
+    "base_commit": "53d2ef342d2f057a8e32992c219d9c59c78cfba7",
+    "problem_statement": "用户实体转换为 DTO 时字段丢失且 ID 错误。请修复映射逻辑，保证字段完整。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "dto",
+      "mapping",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-dto-mapping"
+  },
+  {
+    "task_id": "v2-overload-inheritance",
+    "title": "Overload and inheritance pricing",
+    "description": "Subclass int overload is wrong while double overload stays inherited.",
+    "repository": "evaluation/fixtures/v2/v2-overload-inheritance/repo.bundle",
+    "base_commit": "6d3f68c3d6c96291d496282c56f6693297e91e6d",
+    "problem_statement": "会员价格在整数报价重载中出错，但浮点重载应保持正常。请修复继承与重载行为。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "overload",
+      "inheritance",
+      "method-dispatch"
+    ],
+    "suite": "v2",
+    "difficulty": "medium",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-overload-inheritance"
+  },
+  {
+    "task_id": "v2-order-state-machine",
+    "title": "Order state machine",
+    "description": "Valid and illegal order transitions are mixed up.",
+    "repository": "evaluation/fixtures/v2/v2-order-state-machine/repo.bundle",
+    "base_commit": "eed16696620bc7ce8e2b6d75554cab508f876bd8",
+    "problem_statement": "订单状态流转在支付时进入错误状态，非法流转也没有被阻止。请修复状态机及服务调用。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "state-machine",
+      "service",
+      "domain"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-order-state-machine"
+  },
+  {
+    "task_id": "v2-equals-hashcode",
+    "title": "Equals and hashCode consistency",
+    "description": "Domain key implements inconsistent equality.",
+    "repository": "evaluation/fixtures/v2/v2-equals-hashcode/repo.bundle",
+    "base_commit": "60f4ce93178a609d338b738485474dc7621a1db2",
+    "problem_statement": "客户唯一键在集合中去重失败。请修复 equals/hashCode 契约。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "equals",
+      "hashcode",
+      "collection"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-equals-hashcode"
+  },
+  {
+    "task_id": "v2-cross-package-interface",
+    "title": "Cross-package gateway implementation",
+    "description": "Checkout service depends on a payment interface implemented in another package.",
+    "repository": "evaluation/fixtures/v2/v2-cross-package-interface/repo.bundle",
+    "base_commit": "19a14a27d8a8edbc98c287e88389df481bca7a0d",
+    "problem_statement": "支付接口实现计算了错误的手续费，导致跨 package 的结账金额不正确。请修复接口实现并保持服务契约。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "interface",
+      "cross-package",
+      "service"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-cross-package-interface"
+  },
+  {
+    "task_id": "v2-catalog-layered",
+    "title": "Large layered catalog repository",
+    "description": "Thirty-plus files across controller, service, pricing, repository, and domain packages.",
+    "repository": "evaluation/fixtures/v2/v2-catalog-layered/repo.bundle",
+    "base_commit": "8be557549111a7ce39915381b9ff30c98c64042c",
+    "problem_statement": "商品报价经过 Controller、Service、Repository 多层调用后金额错误。请定位跨层缺陷，修复价格和数量计算。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "large-project",
+      "controller",
+      "service",
+      "repository",
+      "multi-file",
+      "cross-package"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-catalog-layered"
+  },
+  {
+    "task_id": "v2-checkout-transaction",
+    "title": "Checkout repository transaction",
+    "description": "Checkout coordinates inventory and order persistence.",
+    "repository": "evaluation/fixtures/v2/v2-checkout-transaction/repo.bundle",
+    "base_commit": "f9b8e27972960137cc3a60b9daf1d50e317785c8",
+    "problem_statement": "结账时库存与订单状态不一致，且库存边界可能越界。请修复 Repository 与 Service 的协同。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "transaction",
+      "repository",
+      "service",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-checkout-transaction"
+  },
+  {
+    "task_id": "v2-regression-pipeline",
+    "title": "Regression-sensitive text pipeline",
+    "description": "Two services must preserve distinct normalization contracts.",
+    "repository": "evaluation/fixtures/v2/v2-regression-pipeline/repo.bundle",
+    "base_commit": "2b99fe4129ae06c970bfc1fe9ff7a2afb4a23d05",
+    "problem_statement": "文本处理流水线破坏了 slug 分隔符和展示文本大小写。请修复多个组件且避免引入回归。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "regression",
+      "string",
+      "multi-file",
+      "multi-assertion"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-regression-pipeline"
+  },
+  {
+    "task_id": "v2-overloaded-router",
+    "title": "Overloaded notification router",
+    "description": "String and numeric overloads choose different channels.",
+    "repository": "evaluation/fixtures/v2/v2-overloaded-router/repo.bundle",
+    "base_commit": "1778c25ad0a522bd26374e0dff0e1762bf480287",
+    "problem_statement": "通知路由器对字符串与数字重载的处理不一致。请修复重载实现并保证服务层调用正确。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "overload",
+      "service",
+      "multi-assertion"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-overloaded-router"
+  },
+  {
+    "task_id": "v2-optional-repository-chain",
+    "title": "Optional repository chain",
+    "description": "Customer and address repositories compose through Optional.",
+    "repository": "evaluation/fixtures/v2/v2-optional-repository-chain/repo.bundle",
+    "base_commit": "47a38cf573b6cd6e28868ac6965f396fe8325e1a",
+    "problem_statement": "客户与地址仓库组合查询时会丢失默认值并产生错误 DTO。请修复 Optional 链与字段映射。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "optional",
+      "repository",
+      "dto",
+      "multi-file"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-optional-repository-chain"
+  },
+  {
+    "task_id": "v2-inventory-layered",
+    "title": "Large inventory management platform",
+    "description": "Thirty-plus files with controller-service-repository flow and hidden stock invariants.",
+    "repository": "evaluation/fixtures/v2/v2-inventory-layered/repo.bundle",
+    "base_commit": "9d96e270f4d25e3201e17818d9aab67d39c3c59c",
+    "problem_statement": "库存平台在多层调用中返回错误库存，并可能允许超卖。请定位并修复 Repository、Service 和业务边界。",
+    "expected_test_command": "mvn test",
+    "timeout": 300,
+    "tags": [
+      "large-project",
+      "controller",
+      "service",
+      "repository",
+      "multi-file",
+      "state-machine"
+    ],
+    "suite": "v2",
+    "difficulty": "hard",
+    "hidden_tests": "evaluation/hidden_tests/v2/v2-inventory-layered"
+  }
+]

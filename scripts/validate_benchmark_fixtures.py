@@ -1,5 +1,6 @@
 """Validate that every offline benchmark fixture fails on its initial commit."""
 
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -27,7 +28,11 @@ def _create_workspace(manager, bundle: Path, base_commit: str):
 
 
 def main() -> int:
-    tasks = load_tasks()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--suite", choices=["v1", "v2", "all"], default="v1")
+    parser.add_argument("--task")
+    args = parser.parse_args()
+    tasks = load_tasks(suite=args.suite, task_id=args.task)
     failures = []
     with tempfile.TemporaryDirectory(prefix="benchmark-fixtures-") as temp_dir:
         manager = WorkspaceManager(

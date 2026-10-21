@@ -13,6 +13,7 @@ from app.evaluation.models import (
     FailureCategory,
     LLMUsage,
 )
+from app.evaluation.failure_analysis import generate_failure_analysis
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import load_tasks
 from app.evaluation.usage import UsageTracker, UsageTrackingChatModel
@@ -52,6 +53,16 @@ class SequenceTestRunner:
         if not self.results:
             raise AssertionError("Unexpected test runner call")
         return self.results.pop(0)
+
+
+class RecordingSequenceTestRunner(SequenceTestRunner):
+    def __init__(self, results):
+        super().__init__(results)
+        self.paths: list[Path] = []
+
+    def __call__(self, repository_path, tool, timeout):
+        self.paths.append(Path(repository_path))
+        return super().__call__(repository_path, tool, timeout)
 
 
 class StubAgentRunner:
@@ -143,7 +154,7 @@ async def test_final_test_failure_is_recorded(tmp_path):
     result = report.results[0]
     assert result.success is False
     assert result.final_test_passed is False
-    assert result.failure_category == FailureCategory.FINAL_TEST_FAILED
+    assert result.failure_category == FailureCategory.PLANNING_FAILURE
 
 
 async def test_initial_test_unexpectedly_passed(tmp_path):
@@ -312,3 +323,131 @@ def test_builtin_task_catalog_and_bundles():
         assert task.expected_test_command == "mvn test"
         assert task.base_commit
         assert Path(task.repository).exists()
+
+
+def test_v2_catalog_has_difficulty_and_large_projects():
+    tasks = load_tasks(suite="v2")
+    assert len(tasks) == 15
+    assert sum(1 for task in tasks if task.difficulty == "medium") >= 5
+    assert sum(1 for task in tasks if task.difficulty == "hard") >= 5
+    assert all(task.hidden_tests for task in tasks)
+    for task in tasks:
+        assert task.suite == "v2"
+        assert Path(task.hidden_tests).is_dir()
+        assert not Path(task.hidden_tests).resolve().is_relative_to(
+            Path(task.repository).resolve().parent
+        )
+    large = [
+        task
+        for task in tasks
+        if task.task_id in {"v2-catalog-layered", "v2-inventory-layered"}
+    ]
+    for task in large:
+        fixture_dir = Path(task.repository).parent
+        java_files = list(fixture_dir.rglob("*.java"))
+        assert len(java_files) >= 30
+    assert len(load_tasks(suite="all")) == 25
+
+
+async def test_hidden_tests_pass_and_are_isolated_from_agent_workspace(tmp_path):
+    task = next(
+        task
+        for task in load_tasks(suite="v2")
+        if task.task_id == "v2-account-repository"
+    )
+    test_runner = RecordingSequenceTestRunner(
+        [_test_result(False), _test_result(True), _test_result(True)]
+    )
+
+    async def agent(task, repository_path, workspace_id, manager):
+        assert not list(Path(repository_path).rglob("*HiddenTest.java"))
+        return AgentRunOutput(
+            response=AnalyzeResponse(answer="fixed", steps=2),
+            usage=LLMUsage(llm_calls=2, total_tokens=20),
+        )
+
+    runner = BenchmarkRunner(
+        [task],
+        output_dir=tmp_path / "results",
+        workspace_root=tmp_path / "workspaces",
+        test_runner=test_runner,
+        agent_runner=agent,
+        run_id="hidden-pass",
+    )
+    report, _ = await runner.run()
+    result = report.results[0]
+    assert result.success is True
+    assert result.public_tests_passed is True
+    assert result.hidden_tests_passed is True
+    assert result.hidden_test_result is not None
+    assert len(test_runner.paths) == 3
+    assert test_runner.paths[0] == test_runner.paths[1]
+    assert test_runner.paths[2] != test_runner.paths[1]
+    assert report.summary.hidden_test_success_rate == 1.0
+
+
+async def test_hidden_test_failure_prevents_success(tmp_path):
+    task = next(
+        task
+        for task in load_tasks(suite="v2")
+        if task.task_id == "v2-account-repository"
+    )
+    runner = BenchmarkRunner(
+        [task],
+        output_dir=tmp_path / "results",
+        workspace_root=tmp_path / "workspaces",
+        test_runner=SequenceTestRunner(
+            [_test_result(False), _test_result(True), _test_result(False)]
+        ),
+        agent_runner=StubAgentRunner(),
+        run_id="hidden-fail",
+    )
+    report, _ = await runner.run()
+    result = report.results[0]
+    assert result.public_tests_passed is True
+    assert result.hidden_tests_passed is False
+    assert result.success is False
+    assert result.failure_category == FailureCategory.HIDDEN_TEST_FAILURE
+    assert result.hidden_failure_summary
+    assert report.summary.hidden_test_success_rate == 0.0
+    analysis = generate_failure_analysis(
+        report, tmp_path / "failure-analysis.md"
+    )
+    text = analysis.read_text(encoding="utf-8")
+    assert "Benchmark V2 Failure Analysis" in text
+    assert "Hidden regression | 1" in text
+    assert "v2-account-repository" in text
+
+
+async def test_patch_quality_metrics_are_recorded(tmp_path):
+    task = _tasks()[0]
+
+    async def agent(task, repository_path, workspace_id, manager):
+        path = Path(repository_path) / "src/main/java/fixture/Calculator.java"
+        path.write_text(path.read_text(encoding="utf-8") + "\n// changed\n", encoding="utf-8")
+        return AgentRunOutput(
+            response=AnalyzeResponse(
+                answer="changed",
+                steps=1,
+                modified_files=["src/main/java/fixture/Calculator.java"],
+            )
+        )
+
+    runner = BenchmarkRunner(
+        [task],
+        output_dir=tmp_path / "results",
+        workspace_root=tmp_path / "workspaces",
+        test_runner=SequenceTestRunner(
+            [_test_result(False), _test_result(True)]
+        ),
+        agent_runner=agent,
+        run_id="quality",
+    )
+    report, _ = await runner.run()
+    result = report.results[0]
+    assert result.changed_file_count == 1
+    assert result.diff_lines_added >= 1
+    assert result.diff_size >= 1
+    assert result.modified_test_files is False
+    assert result.modified_build_files is False
+    assert result.modified_unrelated_files is True

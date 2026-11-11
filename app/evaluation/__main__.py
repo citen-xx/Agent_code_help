@@ -8,6 +8,7 @@ from app.agent.capabilities import AgentProfile
 from app.evaluation.ablation import run_ablation_experiment
 from app.evaluation.failure_analysis import generate_failure_analysis
 from app.evaluation.models import BenchmarkReport
+from app.evaluation.phase2_5 import run_confirmation_experiment
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -64,6 +65,15 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    confirm = subparsers.add_parser(
+        "confirm",
+        help="Run Phase 2.5 clean confirmation and failure analysis",
+    )
+    confirm.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    confirm.add_argument("--legacy-experiment")
     return parser
 
 
@@ -92,6 +102,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         print(f"Ablation report: {report}")
+        return 0
+    if args.command == "confirm":
+        report = asyncio.run(
+            run_confirmation_experiment(
+                output_dir=Path(args.output_dir),
+                legacy_experiment=args.legacy_experiment,
+            )
+        )
+        print(f"Confirmation report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

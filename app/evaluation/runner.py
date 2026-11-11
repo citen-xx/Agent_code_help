@@ -279,6 +279,52 @@ class BenchmarkRunner:
             and hidden_test_passed is not False
             and category is None
         )
+        response_events = list(response.tool_events) if response else []
+        automatic_tests = response.auto_maven_test_runs if response else 0
+        if response_events:
+            automatic_tests = sum(
+                1 for event in response_events if event.auto_generated
+            )
+            agent_tool_calls = sum(
+                1 for event in response_events if not event.auto_generated
+            )
+            patch_attempts = sum(
+                1
+                for event in response_events
+                if event.tool_name == "apply_patch"
+            )
+            patch_failures = sum(
+                1
+                for event in response_events
+                if event.tool_name == "apply_patch" and not event.success
+            )
+            tool_output_chars = sum(
+                event.output_chars for event in response_events
+            )
+        else:
+            agent_tool_calls = max(
+                (response.tool_calls if response else 0) - automatic_tests,
+                0,
+            )
+            patch_attempts = response.tool_usage.get("apply_patch", 0) if response else 0
+            patch_failures = (
+                response.tool_failure_counts.get("apply_patch", 0)
+                if response
+                else 0
+            )
+            tool_output_chars = response.tool_output_chars if response else 0
+        manual_tests = max(
+            (
+                response.tool_usage.get("run_tests", 0)
+                if response
+                else 0
+            )
+            - automatic_tests,
+            0,
+        )
+        patch_failure_rate = (
+            patch_failures / patch_attempts if patch_attempts else 0.0
+        )
         added, removed = self._diff_metrics(final_diff)
         quality = self._quality_metrics(changed_files, response)
         return BenchmarkTaskResult(
@@ -305,6 +351,14 @@ class BenchmarkRunner:
             auto_maven_test_runs=(
                 response.auto_maven_test_runs if response else 0
             ),
+            agent_tool_calls=agent_tool_calls,
+            harness_action_count=automatic_tests,
+            manual_test_runs=manual_tests,
+            apply_patch_attempts=patch_attempts,
+            apply_patch_failures=patch_failures,
+            apply_patch_failure_rate=patch_failure_rate,
+            tool_output_chars=tool_output_chars,
+            tool_events=response_events,
             repair_rounds=response.repair_rounds if response else 0,
             plan_revisions=list(response.plan_revisions) if response else [],
             duration_seconds=round(time.monotonic() - started, 3),

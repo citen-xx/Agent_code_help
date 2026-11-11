@@ -6,6 +6,7 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import BaseMessage
 
 from app.repair.models import PlanRevision, RepairPlan
+from app.agent.telemetry import ToolEvent
 from app.workspace.models import TestRunResult
 
 
@@ -28,6 +29,7 @@ class AgentState(TypedDict):
         plan_stale: Whether a test failure requires a revised plan.
         latest_patch_diff: Latest diff returned by apply_patch.
         last_failure_summary: Most recent test failure summary.
+        tool_events: Passive telemetry for every tool execution.
     """
 
     task: str
@@ -44,3 +46,4 @@ class AgentState(TypedDict):
     plan_stale: bool
     latest_patch_diff: str
     last_failure_summary: str | None
+    tool_events: Annotated[list[ToolEvent], operator.add]

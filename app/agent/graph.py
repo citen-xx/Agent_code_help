@@ -18,6 +18,7 @@ Only hand-written nodes and edges are used — no high-level agent APIs.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -43,6 +44,7 @@ from app.agent.capabilities import (
     resolve_profile,
 )
 from app.agent.state import AgentState
+from app.agent.telemetry import PatchErrorCategory, ToolEvent
 from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
 from app.llm.client import build_chat_model
@@ -116,6 +118,92 @@ def _test_failure_summary(result: TestRunResult) -> str:
     ]
     summary = "\n".join(part for part in parts if part).strip()
     return summary[:2000]
+
+
+def _argument_fingerprint(arguments: dict) -> str:
+    payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _target_file(tool_name: str, arguments: dict) -> str | None:
+    if tool_name == "apply_patch":
+        paths = [
+            str(change.get("path"))
+            for change in arguments.get("changes", [])
+            if isinstance(change, dict) and change.get("path")
+        ]
+        return ", ".join(paths[:5]) or None
+    for key in ("path", "file_path"):
+        if arguments.get(key):
+            return str(arguments[key])
+    return None
+
+
+def _classify_patch_error(content: str) -> PatchErrorCategory:
+    if "出现 0 次" in content:
+        return PatchErrorCategory.OLD_TEXT_NOT_FOUND
+    if "出现" in content and "次" in content:
+        return PatchErrorCategory.OLD_TEXT_MULTIPLE_MATCHES
+    if "ApplyPatchRequest" in content or "validation error" in content.lower():
+        return PatchErrorCategory.INVALID_PATCH_FORMAT
+    if "目标不是已存在" in content or "文件不存在" in content:
+        return PatchErrorCategory.TARGET_FILE_NOT_FOUND
+    if any(
+        marker in content
+        for marker in ("路径非法", "越出", "符号链接", "硬链接", "禁止修改 .git")
+    ):
+        return PatchErrorCategory.PATH_VALIDATION_FAILED
+    if any(marker in content for marker in ("UTF-8", "二进制", "换行")):
+        return PatchErrorCategory.ENCODING_OR_NEWLINE_MISMATCH
+    if any(marker in content.lower() for marker in ("permission", "权限", "workspace")):
+        return PatchErrorCategory.PERMISSION_OR_WORKSPACE_ERROR
+    if any(marker in content.lower() for marker in ("超时", "timeout", "timed out")):
+        return PatchErrorCategory.TIMEOUT
+    return PatchErrorCategory.OTHER
+
+
+def _error_summary(content: str, limit: int = 500) -> str:
+    normalized = " ".join(content.split())
+    return normalized[:limit]
+
+
+def _tool_event(
+    *,
+    index: int,
+    step: int,
+    repair_round: int,
+    tool_name: str,
+    call_id: str | None,
+    arguments: dict,
+    content: str,
+    success: bool,
+    patch_applied: bool | None = None,
+    auto_generated: bool = False,
+) -> ToolEvent:
+    category = None
+    summary = None
+    if not success:
+        category = (
+            _classify_patch_error(content)
+            if tool_name == "apply_patch"
+            else PatchErrorCategory.OTHER
+        )
+        summary = _error_summary(content)
+    return ToolEvent(
+        tool_call_index=index,
+        step=step,
+        repair_round=repair_round,
+        tool_name=tool_name,
+        call_id=call_id,
+        target_file=_target_file(tool_name, arguments),
+        success=success,
+        error_category=category,
+        error_summary=summary,
+        patch_applied=patch_applied,
+        output_chars=len(content),
+        argument_fingerprint=_argument_fingerprint(arguments),
+        auto_generated=auto_generated,
+    )
 
 
 def _execution_metrics(
@@ -225,6 +313,7 @@ def build_agent_graph(
         plan_stale = state.get("plan_stale", True)
         latest_patch_diff = state.get("latest_patch_diff", "")
         last_failure_summary = state.get("last_failure_summary")
+        tool_events: list[ToolEvent] = []
         calls = getattr(last, "tool_calls", None) or []
         patch_requested = any(call.get("name") == "apply_patch" for call in calls)
         patch_succeeded = False
@@ -233,6 +322,7 @@ def build_agent_graph(
             name = call.get("name")
             args = call.get("args") or {}
             call_id = call.get("id")
+            repair_round_before_call = repair_rounds
             tool = tools_by_name.get(name)
             invocation_succeeded = False
             if tool is None:
@@ -345,6 +435,27 @@ def build_agent_graph(
                 except ValueError:
                     logger.warning("Could not parse run_tests result: %s", content[:500])
             tool_messages.append(ToolMessage(content=content, tool_call_id=call_id))
+            tool_events.append(
+                _tool_event(
+                    index=(
+                        len(state.get("tool_events", []))
+                        + len(tool_events)
+                        + 1
+                    ),
+                    step=max(state["step_count"], 1),
+                    repair_round=repair_round_before_call,
+                    tool_name=str(name or "unknown"),
+                    call_id=str(call_id) if call_id else None,
+                    arguments=args,
+                    content=content,
+                    success=invocation_succeeded,
+                    patch_applied=(
+                        True
+                        if name == "apply_patch" and invocation_succeeded
+                        else None
+                    ),
+                )
+            )
 
         final_answer = state.get("final_answer", "")
         current_step = "tools"
@@ -375,6 +486,25 @@ def build_agent_graph(
                 auto_content = f"[tool error] 自动 Maven 测试执行失败：{exc}"
             tool_messages.append(
                 ToolMessage(content=auto_content, tool_call_id=auto_call_id)
+            )
+            tool_events.append(
+                _tool_event(
+                    index=(
+                        len(state.get("tool_events", []))
+                        + len(tool_events)
+                        + 1
+                    ),
+                    step=max(state["step_count"], 1),
+                    repair_round=repair_rounds,
+                    tool_name="run_tests",
+                    call_id=auto_call_id,
+                    arguments={"tool": "maven"},
+                    content=auto_content,
+                    success=bool(
+                        latest_test is not None and latest_test.success
+                    ),
+                    auto_generated=True,
+                )
             )
 
             if latest_test is not None and latest_test.success:
@@ -409,6 +539,7 @@ def build_agent_graph(
             "plan_stale": plan_stale,
             "latest_patch_diff": latest_patch_diff,
             "last_failure_summary": last_failure_summary,
+            "tool_events": tool_events,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -504,6 +635,7 @@ async def run_agent(
         "plan_stale": True,
         "latest_patch_diff": "",
         "last_failure_summary": None,
+        "tool_events": [],
     }
 
     logger.info(
@@ -533,6 +665,7 @@ async def run_agent(
         empty_patch_calls,
         auto_maven_test_runs,
     ) = _execution_metrics(result.get("messages", []))
+    tool_events = list(result.get("tool_events", []))
     latest_test = result.get("test_result")
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
@@ -599,6 +732,8 @@ async def run_agent(
         tool_failure_counts=tool_failure_counts,
         empty_patch_calls=empty_patch_calls,
         auto_maven_test_runs=auto_maven_test_runs,
+        tool_events=tool_events,
+        tool_output_chars=sum(event.output_chars for event in tool_events),
         modified_files=modified_files,
         repair_rounds=result.get("repair_rounds", 0),
         test_result=latest_test,

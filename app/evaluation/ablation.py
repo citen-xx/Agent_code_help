@@ -67,13 +67,53 @@ def _aggregate_variant(
     task_groups: dict[str, list[BenchmarkTaskResult]] = defaultdict(list)
     tool_usage: Counter[str] = Counter()
     tool_failures: Counter[str] = Counter()
+    tool_output_chars: Counter[str] = Counter()
     failure_categories: Counter[str] = Counter()
     for result in results:
         task_groups[result.task_id].append(result)
         tool_usage.update(result.tool_usage)
         tool_failures.update(result.tool_failure_counts)
+        for event in result.tool_events:
+            tool_output_chars[event.tool_name] += event.output_chars
         if result.failure_category is not None:
             failure_categories[result.failure_category.value] += 1
+
+    patch_attempts = sum(
+        (
+            result.apply_patch_attempts
+            if "apply_patch_attempts" in result.model_fields_set
+            else result.tool_usage.get("apply_patch", 0)
+        )
+        for result in results
+    )
+    patch_failures = sum(
+        (
+            result.apply_patch_failures
+            if "apply_patch_failures" in result.model_fields_set
+            else result.tool_failure_counts.get("apply_patch", 0)
+        )
+        for result in results
+    )
+    manual_test_runs = sum(
+        (
+            result.manual_test_runs
+            if "manual_test_runs" in result.model_fields_set
+            else max(
+                result.tool_usage.get("run_tests", 0)
+                - result.auto_maven_test_runs,
+                0,
+            )
+        )
+        for result in results
+    )
+    agent_tool_calls = sum(
+        (
+            result.agent_tool_calls
+            if "agent_tool_calls" in result.model_fields_set
+            else max(result.tool_calls - result.auto_maven_test_runs, 0)
+        )
+        for result in results
+    )
 
     task_results: dict[str, dict] = {}
     for task_id in sorted(task_groups):
@@ -98,6 +138,16 @@ def _aggregate_variant(
         result.total_tokens
         for result in results
         if result.total_tokens is not None
+    ]
+    prompt_token_values = [
+        result.prompt_tokens
+        for result in results
+        if result.prompt_tokens is not None
+    ]
+    completion_token_values = [
+        result.completion_tokens
+        for result in results
+        if result.completion_tokens is not None
     ]
     hidden_results = [
         result
@@ -162,11 +212,26 @@ def _aggregate_variant(
             ),
             "average_tokens": _mean(token_values),
             "median_tokens": _median(token_values),
+            "average_prompt_tokens": _mean(prompt_token_values),
+            "average_completion_tokens": _mean(completion_token_values),
             "average_llm_calls": _mean(
                 [result.llm_calls for result in results]
             ),
             "average_tool_calls": _mean(
                 [result.tool_calls for result in results]
+            ),
+            "average_agent_tool_calls": _mean(
+                [
+                    (
+                        result.agent_tool_calls
+                        if "agent_tool_calls" in result.model_fields_set
+                        else max(
+                            result.tool_calls - result.auto_maven_test_runs,
+                            0,
+                        )
+                    )
+                    for result in results
+                ]
             ),
             "average_duration": _mean(
                 [result.duration_seconds for result in results]
@@ -185,12 +250,24 @@ def _aggregate_variant(
             "auto_maven_test_runs": sum(
                 result.auto_maven_test_runs for result in results
             ),
+            "manual_test_runs": manual_test_runs,
+            "agent_tool_calls": agent_tool_calls,
+            "apply_patch_attempts": patch_attempts,
+            "apply_patch_failures": patch_failures,
+            "apply_patch_failure_rate": _rate(
+                patch_failures,
+                patch_attempts,
+            ),
+            "tool_output_chars": sum(
+                result.tool_output_chars for result in results
+            ),
             "repair_activated_task_runs": sum(
                 1 for result in results if result.repair_rounds > 0
             ),
         },
         "tool_usage": dict(sorted(tool_usage.items())),
         "tool_failures": dict(sorted(tool_failures.items())),
+        "tool_output_chars": dict(sorted(tool_output_chars.items())),
         "failure_categories": dict(sorted(failure_categories.items())),
         "task_results": task_results,
         "stability": {
@@ -398,12 +475,21 @@ def _render_report(experiment: dict) -> str:
         ("failed_tool_calls", "Failed tool calls"),
         ("empty_patch_calls", "Empty patch calls"),
         ("auto_maven_test_runs", "Auto Maven tests"),
+        ("manual_test_runs", "Manual Maven tests"),
+        ("apply_patch_attempts", "Apply patch attempts"),
+        ("apply_patch_failures", "Apply patch failures"),
+        ("apply_patch_failure_rate", "Apply patch failure rate"),
         ("repair_activated_task_runs", "Repair-activated task runs"),
     ):
         lines.append(
             f"| {label} | "
             + " | ".join(
-                str(variant["metrics"][key]) for variant in ordered
+                (
+                    _percent(variant["metrics"][key])
+                    if key == "apply_patch_failure_rate"
+                    else str(variant["metrics"][key])
+                )
+                for variant in ordered
             )
             + " |"
         )

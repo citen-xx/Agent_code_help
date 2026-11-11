@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from app.agent.telemetry import ToolEvent
 from app.repair.models import PlanRevision
 from app.schemas.agent import AnalyzeResponse
 from app.workspace.models import TestRunResult
@@ -76,6 +77,14 @@ class BenchmarkTaskResult(BaseModel):
     tool_failure_counts: dict[str, int] = Field(default_factory=dict)
     empty_patch_calls: int = Field(default=0, ge=0)
     auto_maven_test_runs: int = Field(default=0, ge=0)
+    agent_tool_calls: int = Field(default=0, ge=0)
+    harness_action_count: int = Field(default=0, ge=0)
+    manual_test_runs: int = Field(default=0, ge=0)
+    apply_patch_attempts: int = Field(default=0, ge=0)
+    apply_patch_failures: int = Field(default=0, ge=0)
+    apply_patch_failure_rate: float | None = Field(default=None, ge=0, le=1)
+    tool_output_chars: int = Field(default=0, ge=0)
+    tool_events: list[ToolEvent] = Field(default_factory=list)
     repair_rounds: int = Field(default=0, ge=0)
     plan_revisions: list[PlanRevision] = Field(default_factory=list)
     duration_seconds: float = Field(ge=0)

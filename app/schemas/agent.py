@@ -3,6 +3,7 @@
 from pydantic import BaseModel, Field, model_validator
 
 from app.agent.capabilities import DEFAULT_AGENT_PROFILE, AgentProfile
+from app.agent.telemetry import ToolEvent
 from app.repair.models import PlanRevision, RepairPlan
 from app.workspace.models import TestRunResult
 
@@ -65,6 +66,11 @@ class AnalyzeResponse(BaseModel):
         ge=0,
         description="Maven tests triggered automatically after a patch.",
     )
+    tool_events: list[ToolEvent] = Field(
+        default_factory=list,
+        description="Sanitized passive telemetry for each executed tool call.",
+    )
+    tool_output_chars: int = Field(default=0, ge=0)
     modified_files: list[str] = Field(
         default_factory=list,
         description="Files changed by the Agent in this run.",

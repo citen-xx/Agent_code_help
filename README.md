@@ -498,6 +498,26 @@ evaluation/results/<experiment_id>/
 `experiment.json` 记录 profile、capabilities、model、benchmark、git commit、
 重复运行路径、tool usage、失败分类和 task-level stability。
 
+Phase 2.5 确认实验要求 clean Git working tree：
+
+```bash
+uv run python -m app.evaluation confirm
+```
+
+输出写入：
+
+```text
+evaluation/results/phase2_5_confirmation/
+  source_manifest.json
+  patch_failure_analysis.json
+  patch_failure_analysis.md
+  confirmation_report.json
+  confirmation_report.md
+```
+
+被动工具遥测记录 sanitized error summary、目标文件、step、repair round、
+argument fingerprint、输出字符数和 patch 是否应用；不保存完整源码或 Patch 内容。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

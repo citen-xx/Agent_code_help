@@ -188,6 +188,15 @@ async def test_basic_profile_allows_patch_without_plan_or_auto_test(
     assert result.test_result is None
     assert result.auto_maven_test_runs == 0
     assert result.tool_usage == {"apply_patch": 1}
+    assert len(result.tool_events) == 1
+    assert result.tool_events[0].tool_name == "apply_patch"
+    assert result.tool_events[0].step == 1
+    assert result.tool_events[0].repair_round == 0
+    assert result.tool_events[0].target_file == "Main.java"
+    assert result.tool_events[0].success is True
+    assert result.tool_events[0].patch_applied is True
+    assert result.tool_events[0].error_category is None
+    assert result.tool_events[0].output_chars > 0
     assert model.calls == 2
 
 

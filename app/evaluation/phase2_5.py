@@ -794,6 +794,7 @@ def _render_confirmation_report(payload: dict) -> str:
         f"- Audited/reconstructed Phase 2 source commit: "
         f"`{LEGACY_RECONSTRUCTED_COMMIT}`.",
         f"- Confirmation source commit: `{payload['confirmation_commit']}`.",
+        f"- Final analysis code commit: `{payload['analysis_code_commit']}`.",
         f"- Confirmation working tree clean: "
         f"{payload['confirmation_working_tree_clean']}.",
         "- The legacy runs are labeled exploratory because they were executed with "
@@ -1106,6 +1107,7 @@ def _write_confirmation_outputs(
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "confirmation_commit": manifest["confirmation_source"]["git_commit"],
+        "analysis_code_commit": git.head_commit(PROJECT_ROOT),
         "confirmation_working_tree_clean": manifest["confirmation_source"][
             "working_tree_clean"
         ],

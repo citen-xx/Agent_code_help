@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.agent.capabilities import DEFAULT_AGENT_PROFILE, AgentProfile
 from app.repair.models import PlanRevision, RepairPlan
 from app.workspace.models import TestRunResult
 
@@ -14,6 +15,10 @@ class AnalyzeRequest(BaseModel):
     """
 
     task: str = Field(min_length=1, description="The natural-language task to perform on the repository.")
+    profile: AgentProfile = Field(
+        default=DEFAULT_AGENT_PROFILE,
+        description="Agent capability profile; defaults to the full production Agent.",
+    )
     workspace_id: str | None = Field(default=None, description="Workspace to analyze (recommended).")
     repository_path: str | None = Field(
         default=None, min_length=1, description="Local repository path to analyze (legacy)."
@@ -33,6 +38,33 @@ class AnalyzeResponse(BaseModel):
 
     answer: str = Field(description="The agent's final answer.")
     steps: int = Field(ge=0, description="Number of LLM iterations executed.")
+    tool_calls: int = Field(
+        default=0,
+        ge=0,
+        description="Number of tool executions performed during the run.",
+    )
+    last_agent_action: str = Field(
+        default="",
+        description="Most recent tool action, used for benchmark failure analysis.",
+    )
+    tool_usage: dict[str, int] = Field(
+        default_factory=dict,
+        description="Executed tool names and call counts.",
+    )
+    tool_failure_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Tool execution errors grouped by tool name.",
+    )
+    empty_patch_calls: int = Field(
+        default=0,
+        ge=0,
+        description="Successful apply_patch calls that produced no diff.",
+    )
+    auto_maven_test_runs: int = Field(
+        default=0,
+        ge=0,
+        description="Maven tests triggered automatically after a patch.",
+    )
     modified_files: list[str] = Field(
         default_factory=list,
         description="Files changed by the Agent in this run.",

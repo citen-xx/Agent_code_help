@@ -362,6 +362,7 @@ Fixture：
 - Hidden tests 不在 Agent Prompt、bundle、read/search/index 可见范围内。
 - Agent 完成后，Runner 将最终代码复制到独立临时目录，再注入 hidden tests。
 - 只有公开 Maven tests 和 hidden Maven tests 同时通过，`success=true`。
+- Workspace clone 固定使用 `core.autocrlf=false`，保留 fixture 的原始 LF 换行，避免 Windows 下 `read_file` 与 `apply_patch` 的文本视图不一致。
 
 运行全部任务：
 
@@ -376,12 +377,17 @@ uv run python -m app.evaluation run --suite all
 
 ```bash
 uv run python -m app.evaluation run --task arithmetic-logic
+uv run python -m app.evaluation run --suite v2 --task v2-account-repository
 ```
 
-JSON 报告写入：
+每次运行写入独立目录：
 
 ```text
-evaluation/results/<timestamp>.json
+evaluation/results/<run_id>/
+  summary.json
+  tasks.json
+  report.json
+  baseline_report.md
 ```
 
 终端汇总包含：
@@ -396,8 +402,12 @@ Average plan revisions
 Average changed files
 Average diff size
 Average duration
+Average LLM calls
+Average tokens
 Public test success rate
-Hidden test success rate
+Hidden test pass rate
+Medium success rate
+Hard success rate
 Success rate by difficulty
 LLM calls
 Tokens
@@ -412,26 +422,81 @@ Estimated cost (provider 不支持时为 unavailable)
 - `timeout`
 - `final_test_failed`
 - `infrastructure_error`
+- `localization_failure`
+- `planning_failure`
+- `patch_failure`
+- `public_test_failure`
+- `hidden_test_failure`
+- `repair_limit_exceeded`
 
-成功标准只看最终独立 Maven test 是否通过，不信任 Agent 自述。单个任务失败会记录原因与 Agent 最终输出，然后继续执行后续任务。
+成功标准是最终独立 public Maven test 与 hidden Maven test 均通过，不信任 Agent 自述。单个任务失败会记录原因、最后工具动作与 Agent 最终输出，然后继续执行后续任务。
 
 V2 结果还会记录：
 
 - `public_tests_passed`
 - `hidden_tests_passed`
 - `hidden_failure_summary`
+- `changed_files`
 - `changed_file_count`
 - `diff_lines_added`
 - `diff_lines_removed`
+- `diff_size`
+- `tool_calls`
+- `llm_calls`
+- `prompt_tokens`
+- `completion_tokens`
+- `total_tokens`
+- `last_agent_action`
 - 是否修改无关文件、测试文件或构建文件
 
 生成 V2 失败分析：
 
 ```bash
 uv run python -m app.evaluation analyze \
-  --report evaluation/results/<timestamp>.json \
+  --report evaluation/results/<run_id>/report.json \
   --output evaluation/failure-analysis.md
 ```
+
+### Agent Capability Ablation
+
+统一 profile 控制同一份 Agent Graph 暴露的能力：
+
+| Profile | Code Intelligence | Repair Planner | Automatic Repair Loop |
+|---|---:|---:|---:|
+| `basic` | off | off | off |
+| `code_intelligence` | on | off | off |
+| `planner` | on | on | off |
+| `full` | on | on | on |
+
+默认 profile 是 `full`。运行单个 profile：
+
+```bash
+uv run python -m app.evaluation run --suite v2 --profile code_intelligence
+```
+
+运行完整消融实验（每个 Variant 默认 2 个 V2 run）：
+
+```bash
+uv run python -m app.evaluation ablation \
+  --suite v2 \
+  --runs-per-variant 2 \
+  --experiment-id ablation_phase2
+```
+
+输出目录：
+
+```text
+evaluation/results/<experiment_id>/
+  experiment.json
+  ablation_report.md
+  variant_basic/
+  variant_code_intelligence/
+  variant_planner/
+  variant_full/
+```
+
+`experiment.json` 记录 profile、capabilities、model、benchmark、git commit、
+重复运行路径、tool usage、失败分类和 task-level stability。
 
 重新生成确定性 Fixture 和 bundle：
 

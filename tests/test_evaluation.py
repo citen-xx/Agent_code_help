@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import ToolMessage
 
+from app.agent.graph import _execution_metrics
+from app.agent.capabilities import AgentProfile
 from app.evaluation.models import (
     AgentRunOutput,
     BenchmarkTask,
@@ -101,6 +104,8 @@ async def test_single_task_success_and_report(tmp_path):
         AnalyzeResponse(
             answer="fixed",
             steps=3,
+            tool_calls=5,
+            last_agent_action='apply_patch {"changes":[]}',
             modified_files=["src/main/java/fixture/Calculator.java"],
             repair_rounds=1,
             diff="diff --git a/x b/x",
@@ -121,6 +126,7 @@ async def test_single_task_success_and_report(tmp_path):
         ),
         agent_runner=agent,
         run_id="success-run",
+        profile=AgentProfile.BASIC,
     )
     report, path = await runner.run()
     assert report.summary.passed_tasks == 1
@@ -131,10 +137,36 @@ async def test_single_task_success_and_report(tmp_path):
     assert report.results[0].final_test_passed is True
     assert report.results[0].repair_rounds == 1
     assert report.results[0].llm_calls == 3
-    assert path.name == "success-run.json"
+    assert report.results[0].tool_calls == 5
+    assert report.results[0].last_agent_action == 'apply_patch {"changes":[]}'
+    assert report.summary.average_llm_calls == 3.0
+    assert report.summary.average_tokens == 120.0
+    assert path.name == "report.json"
+    assert path.parent.name == "success-run"
+    assert report.variant == "basic"
+    assert report.capabilities == {
+        "code_intelligence": False,
+        "repair_planner": False,
+        "repair_loop": False,
+    }
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["summary"]["passed_tasks"] == 1
     assert payload["results"][0]["task_id"] == task.task_id
+    summary_payload = json.loads(
+        (path.parent / "summary.json").read_text(encoding="utf-8")
+    )
+    assert summary_payload["total_tasks"] == 1
+    assert summary_payload["average_llm_calls"] == 3.0
+    assert summary_payload["average_tokens"] == 120.0
+    assert summary_payload["variant"] == "basic"
+    tasks_payload = json.loads(
+        (path.parent / "tasks.json").read_text(encoding="utf-8")
+    )
+    assert tasks_payload[0]["task_id"] == task.task_id
+    assert tasks_payload[0]["tool_calls"] == 5
+    markdown = (path.parent / "baseline_report.md").read_text(encoding="utf-8")
+    assert "# Baseline Benchmark" in markdown
+    assert "Average Tokens: 120.0" in markdown
     assert not any((tmp_path / "workspaces").iterdir())
 
 
@@ -155,6 +187,19 @@ async def test_final_test_failure_is_recorded(tmp_path):
     assert result.success is False
     assert result.final_test_passed is False
     assert result.failure_category == FailureCategory.PLANNING_FAILURE
+
+
+def test_public_failure_without_planner_does_not_report_planning_failure():
+    category, _ = BenchmarkRunner._classify_public_failure(
+        AnalyzeResponse(
+            answer="tests failed",
+            steps=2,
+            modified_files=["src/main/java/fixture/Calculator.java"],
+        ),
+        ["src/main/java/fixture/Calculator.java"],
+        planner_enabled=False,
+    )
+    assert category == FailureCategory.PUBLIC_TEST_FAILURE
 
 
 async def test_initial_test_unexpectedly_passed(tmp_path):
@@ -208,6 +253,51 @@ async def test_agent_timeout_is_classified_and_workspace_cleaned(tmp_path):
     assert report.results[0].failure_category == FailureCategory.TIMEOUT
     assert report.results[0].final_test_passed is False
     assert not any((tmp_path / "workspaces").iterdir())
+
+
+async def test_v2_agent_timeout_marks_hidden_result_unavailable(tmp_path):
+    task = next(
+        task
+        for task in load_tasks(suite="v2")
+        if task.task_id == "v2-account-repository"
+    ).model_copy(update={"timeout": 0.01})
+    runner = BenchmarkRunner(
+        [task],
+        output_dir=tmp_path / "results",
+        workspace_root=tmp_path / "workspaces",
+        test_runner=SequenceTestRunner([_test_result(False)]),
+        agent_runner=StubAgentRunner(delay=0.2),
+        run_id="v2-timeout",
+    )
+    report, _ = await runner.run()
+    result = report.results[0]
+    assert result.failure_category == FailureCategory.TIMEOUT
+    assert result.hidden_test_result is None
+    assert result.hidden_tests_passed is None
+    assert report.summary.hidden_tests_evaluated == 0
+
+
+async def test_test_timeout_is_classified_as_timeout(tmp_path):
+    task = _tasks()[0]
+    timed_out_result = MavenTestResult(
+        tool=BuildTool.MAVEN,
+        command=["mvn", "test"],
+        exit_code=None,
+        success=False,
+        timed_out=True,
+        error="Maven Docker 测试超时",
+        duration_seconds=0.1,
+    )
+    runner = BenchmarkRunner(
+        [task],
+        output_dir=tmp_path / "results",
+        workspace_root=tmp_path / "workspaces",
+        test_runner=SequenceTestRunner([timed_out_result]),
+        agent_runner=StubAgentRunner(),
+        run_id="test-timeout",
+    )
+    report, _ = await runner.run()
+    assert report.results[0].failure_category == FailureCategory.TIMEOUT
 
 
 async def test_infrastructure_error_does_not_crash(tmp_path):
@@ -283,6 +373,8 @@ async def test_multiple_tasks_continue_after_failure_and_are_isolated(tmp_path):
     assert report.summary.passed_tasks == 1
     assert report.summary.total_llm_calls == 1
     assert report.summary.total_tokens == 10
+    assert report.summary.average_tokens == 10.0
+    assert report.summary.average_llm_calls == 0.5
     assert report.results[0].failure_category == FailureCategory.AGENT_FAILED
     assert report.results[1].success is True
     assert len(agent.repositories) == 2
@@ -384,6 +476,7 @@ async def test_hidden_tests_pass_and_are_isolated_from_agent_workspace(tmp_path)
     assert test_runner.paths[0] == test_runner.paths[1]
     assert test_runner.paths[2] != test_runner.paths[1]
     assert report.summary.hidden_test_success_rate == 1.0
+    assert report.summary.hidden_test_pass_rate == 1.0
 
 
 async def test_hidden_test_failure_prevents_success(tmp_path):
@@ -399,10 +492,16 @@ async def test_hidden_test_failure_prevents_success(tmp_path):
         test_runner=SequenceTestRunner(
             [_test_result(False), _test_result(True), _test_result(False)]
         ),
-        agent_runner=StubAgentRunner(),
+        agent_runner=StubAgentRunner(
+            AnalyzeResponse(
+                answer="hidden regression",
+                steps=2,
+                last_agent_action='apply_patch {"changes":[]}',
+            )
+        ),
         run_id="hidden-fail",
     )
-    report, _ = await runner.run()
+    report, report_path = await runner.run()
     result = report.results[0]
     assert result.public_tests_passed is True
     assert result.hidden_tests_passed is False
@@ -410,6 +509,11 @@ async def test_hidden_test_failure_prevents_success(tmp_path):
     assert result.failure_category == FailureCategory.HIDDEN_TEST_FAILURE
     assert result.hidden_failure_summary
     assert report.summary.hidden_test_success_rate == 0.0
+    markdown = (report_path.parent / "baseline_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Last Agent Action:" in markdown
+    assert 'apply_patch {"changes":[]}' in markdown
     analysis = generate_failure_analysis(
         report, tmp_path / "failure-analysis.md"
     )
@@ -425,6 +529,9 @@ async def test_patch_quality_metrics_are_recorded(tmp_path):
     async def agent(task, repository_path, workspace_id, manager):
         path = Path(repository_path) / "src/main/java/fixture/Calculator.java"
         path.write_text(path.read_text(encoding="utf-8") + "\n// changed\n", encoding="utf-8")
+        target = Path(repository_path) / "target" / "classes"
+        target.mkdir(parents=True)
+        (target / "Calculator.class").write_bytes(b"generated")
         return AgentRunOutput(
             response=AnalyzeResponse(
                 answer="changed",
@@ -446,8 +553,51 @@ async def test_patch_quality_metrics_are_recorded(tmp_path):
     report, _ = await runner.run()
     result = report.results[0]
     assert result.changed_file_count == 1
+    assert result.changed_files == ["src/main/java/fixture/Calculator.java"]
     assert result.diff_lines_added >= 1
     assert result.diff_size >= 1
     assert result.modified_test_files is False
     assert result.modified_build_files is False
     assert result.modified_unrelated_files is True
+
+
+def test_execution_metrics_count_tools_and_last_action():
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "read_file",
+                    "args": {"path": "A.java"},
+                    "id": "call-1",
+                }
+            ],
+        ),
+        ToolMessage(content="ok", tool_call_id="call-1"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "apply_patch",
+                    "args": {"changes": [{"path": "A.java"}]},
+                    "id": "call-2",
+                }
+            ],
+        ),
+        ToolMessage(content="ok", tool_call_id="call-2"),
+    ]
+    (
+        count,
+        last_action,
+        tool_usage,
+        failures,
+        empty_patch_calls,
+        auto_maven_test_runs,
+    ) = _execution_metrics(messages)
+    assert count == 2
+    assert last_action.startswith("apply_patch ")
+    assert '"path": "A.java"' in last_action
+    assert tool_usage == {"apply_patch": 1, "read_file": 1}
+    assert failures == {}
+    assert empty_patch_calls == 0
+    assert auto_maven_test_runs == 0

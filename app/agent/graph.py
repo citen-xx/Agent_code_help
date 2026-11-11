@@ -34,6 +34,14 @@ from langchain_core.messages import (
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.capabilities import (
+    DEFAULT_AGENT_PROFILE,
+    FULL_CAPABILITIES,
+    AgentCapabilities,
+    AgentProfile,
+    capabilities_for,
+    resolve_profile,
+)
 from app.agent.state import AgentState
 from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
@@ -56,24 +64,48 @@ MAX_REPAIR_ROUNDS = 3
 #: Safety cap for a whole agent run (single LLM calls have their own timeout).
 DEFAULT_RUN_TIMEOUT_SECONDS = 300.0
 
-SYSTEM_PROMPT = (
+PROMPT_COMMON_START = (
     "You are a Java coding assistant working inside one isolated workspace. "
+)
+PROMPT_CODE_INTELLIGENCE = (
     "Prefer Java symbol tools (list_symbols, find_symbol, find_references) to "
     "locate declarations and usages, and call analyze_impact before changing a "
     "method when its blast radius matters. Use find_callers/find_callees for call "
     "relationships, then read_file or search_code only as needed. "
+)
+PROMPT_REPAIR_PLANNER = (
     "Before the first apply_patch, create a structured plan with create_repair_plan. "
     "After every failed Maven test, revise the plan with create_repair_plan and a "
     "revision_reason before patching again. For a code change, follow this order: "
     "locate the problem, read relevant code, create the plan, use apply_patch to "
-    "edit existing UTF-8 files. A successful patch automatically runs the fixed "
+    "edit existing UTF-8 files. "
+)
+PROMPT_REPAIR_LOOP = (
+    "A successful patch automatically runs the fixed "
     "Maven test. Inspect failures, read code again, revise the plan, and patch again. "
+)
+PROMPT_COMMON_END = (
     "apply_patch requires exact old_text/new_text replacements and is atomic. "
     "Never modify files outside apply_patch, never run shell commands, and never "
     "invent Maven arguments. At most three repair patches are allowed after the "
     "first failed test. When tests pass, summarize the change and mention the "
     "test result and diff. Answer in the same language as the user's task."
 )
+
+
+def build_system_prompt(capabilities: AgentCapabilities) -> str:
+    parts = [PROMPT_COMMON_START]
+    if capabilities.code_intelligence:
+        parts.append(PROMPT_CODE_INTELLIGENCE)
+    if capabilities.repair_planner:
+        parts.append(PROMPT_REPAIR_PLANNER)
+    if capabilities.repair_loop:
+        parts.append(PROMPT_REPAIR_LOOP)
+    parts.append(PROMPT_COMMON_END)
+    return "".join(parts)
+
+
+SYSTEM_PROMPT = build_system_prompt(FULL_CAPABILITIES)
 
 
 def _test_failure_summary(result: TestRunResult) -> str:
@@ -86,7 +118,65 @@ def _test_failure_summary(result: TestRunResult) -> str:
     return summary[:2000]
 
 
-def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: int = DEFAULT_MAX_STEPS):
+def _execution_metrics(
+    messages: list,
+) -> tuple[int, str, dict[str, int], dict[str, int], int, int]:
+    """Derive tool-call telemetry from the completed message history."""
+    calls_by_id: dict[str, tuple[str, dict]] = {}
+    tool_calls = 0
+    last_action = ""
+    tool_usage: dict[str, int] = {}
+    tool_failure_counts: dict[str, int] = {}
+    empty_patch_calls = 0
+    auto_maven_test_runs = 0
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    calls_by_id[call_id] = (
+                        str(call.get("name") or "unknown"),
+                        call.get("args") or {},
+                    )
+        elif isinstance(message, ToolMessage):
+            tool_calls += 1
+            action = calls_by_id.get(str(message.tool_call_id))
+            if action is not None:
+                name, args = action
+                tool_usage[name] = tool_usage.get(name, 0) + 1
+                content = str(message.content)
+                if content.startswith(("[tool error]", "[planner required]")):
+                    tool_failure_counts[name] = tool_failure_counts.get(name, 0) + 1
+                if name == "apply_patch" and content.lstrip().startswith("{"):
+                    try:
+                        body = json.loads(content)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        body = {}
+                    if body.get("success") is True and not str(body.get("diff") or "").strip():
+                        empty_patch_calls += 1
+                if name == "run_tests" and str(message.tool_call_id).startswith(
+                    "auto_test_"
+                ):
+                    auto_maven_test_runs += 1
+                last_action = (
+                    f"{name} {json.dumps(args, ensure_ascii=False, sort_keys=True)}"
+                )[:2000]
+    return (
+        tool_calls,
+        last_action,
+        dict(sorted(tool_usage.items())),
+        dict(sorted(tool_failure_counts.items())),
+        empty_patch_calls,
+        auto_maven_test_runs,
+    )
+
+
+def build_agent_graph(
+    model: BaseChatModel,
+    tools: list[BaseTool],
+    max_steps: int = DEFAULT_MAX_STEPS,
+    capabilities: AgentCapabilities = FULL_CAPABILITIES,
+):
     """Build the compiled agent graph: LLM <-> tools until a final answer."""
     tools_by_name = {tool.name: tool for tool in tools}
 
@@ -148,6 +238,8 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
             if tool is None:
                 content = f"[tool error] 未知工具：{name}（可用工具：{', '.join(sorted(tools_by_name))}）"
             elif (
+                capabilities.repair_loop
+                and
                 name == "apply_patch"
                 and has_seen_test_failure
                 and repair_rounds >= MAX_REPAIR_ROUNDS
@@ -156,12 +248,18 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
                     f"[tool error] 已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复上限，"
                     "禁止继续 apply_patch。请基于现有 diff 和测试结果给出最终说明。"
                 )
-            elif name == "apply_patch" and (repair_plan is None or plan_stale):
+            elif (
+                capabilities.repair_planner
+                and name == "apply_patch"
+                and (repair_plan is None or plan_stale)
+            ):
                 content = (
                     "[planner required] apply_patch 前必须先调用 create_repair_plan；"
                     "Maven 失败后必须提交带 revision_reason 的修订计划。"
                 )
             elif (
+                capabilities.repair_planner
+                and
                 name == "create_repair_plan"
                 and repair_plan is not None
                 and not args.get("revision_reason")
@@ -251,7 +349,11 @@ def build_agent_graph(model: BaseChatModel, tools: list[BaseTool], max_steps: in
         final_answer = state.get("final_answer", "")
         current_step = "tools"
         run_tests_tool = tools_by_name.get("run_tests")
-        if patch_succeeded and run_tests_tool is not None:
+        if (
+            capabilities.repair_loop
+            and patch_succeeded
+            and run_tests_tool is not None
+        ):
             auto_call_id = f"auto_test_{uuid.uuid4().hex[:12]}"
             auto_call = {
                 "name": "run_tests",
@@ -341,6 +443,7 @@ async def run_agent(
     run_timeout_seconds: float | None = DEFAULT_RUN_TIMEOUT_SECONDS,
     workspace_id: str | None = None,
     workspace_manager=None,
+    profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -348,21 +451,25 @@ async def run_agent(
     Maven/Gradle test lifecycle. The LLM is injected (tests pass a fake); when
     omitted it is built from settings, which requires LLM_* in .env.
     """
+    resolved_profile = resolve_profile(profile)
+    capabilities = capabilities_for(resolved_profile)
     model = model or build_chat_model()
     tools = create_repo_tools(repository_path)
     if workspace_id:
         # All mutating and execution tools are bound to this workspace only.
-        tools += create_code_intel_tools(
-            workspace_id,
-            repository_path,
-            manager=workspace_manager,
-        )
+        if capabilities.code_intelligence:
+            tools += create_code_intel_tools(
+                workspace_id,
+                repository_path,
+                manager=workspace_manager,
+            )
         tools += create_git_tools(workspace_id, repository_path, manager=workspace_manager)
-        tools += create_repair_plan_tools(
-            workspace_id,
-            repository_path,
-            manager=workspace_manager,
-        )
+        if capabilities.repair_planner:
+            tools += create_repair_plan_tools(
+                workspace_id,
+                repository_path,
+                manager=workspace_manager,
+            )
         tools += create_patch_tools(
             workspace_id,
             repository_path,
@@ -374,11 +481,17 @@ async def run_agent(
             manager=workspace_manager,
             timeout_seconds=settings.BUILD_TEST_TIMEOUT_SECONDS,
         )
-    graph = build_agent_graph(model, tools, max_steps=max_steps)
+    system_prompt = build_system_prompt(capabilities)
+    graph = build_agent_graph(
+        model,
+        tools,
+        max_steps=max_steps,
+        capabilities=capabilities,
+    )
 
     initial_state: AgentState = {
         "task": task,
-        "messages": [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=task)],
+        "messages": [SystemMessage(content=system_prompt), HumanMessage(content=task)],
         "current_step": "init",
         "step_count": 0,
         "final_answer": "",
@@ -393,7 +506,12 @@ async def run_agent(
         "last_failure_summary": None,
     }
 
-    logger.info("Agent run started (repo=%s, max_steps=%d)", repository_path, max_steps)
+    logger.info(
+        "Agent run started (repo=%s, max_steps=%d, profile=%s)",
+        repository_path,
+        max_steps,
+        resolved_profile.value,
+    )
     try:
         if run_timeout_seconds is None:
             result = await graph.ainvoke(initial_state)
@@ -407,6 +525,14 @@ async def run_agent(
         return AnalyzeResponse(answer=f"Agent 执行异常：{exc}", steps=0)
 
     modified_files = list(dict.fromkeys(result.get("modified_files", [])))
+    (
+        tool_calls,
+        last_agent_action,
+        tool_usage,
+        tool_failure_counts,
+        empty_patch_calls,
+        auto_maven_test_runs,
+    ) = _execution_metrics(result.get("messages", []))
     latest_test = result.get("test_result")
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
@@ -467,6 +593,12 @@ async def run_agent(
     return AnalyzeResponse(
         answer=final_answer,
         steps=result["step_count"],
+        tool_calls=tool_calls,
+        last_agent_action=last_agent_action,
+        tool_usage=tool_usage,
+        tool_failure_counts=tool_failure_counts,
+        empty_patch_calls=empty_patch_calls,
+        auto_maven_test_runs=auto_maven_test_runs,
         modified_files=modified_files,
         repair_rounds=result.get("repair_rounds", 0),
         test_result=latest_test,

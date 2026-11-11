@@ -19,8 +19,10 @@ class FakeChatModel(BaseChatModel):
     error: Exception | None = None
     calls: int = 0
     history: list[list[BaseMessage]] = Field(default_factory=list)
+    bound_tool_names: list[list[str]] = Field(default_factory=list)
 
     def bind_tools(self, tools, **kwargs):
+        self.bound_tool_names.append([tool.name for tool in tools])
         return self
 
     @property

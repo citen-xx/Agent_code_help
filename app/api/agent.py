@@ -53,4 +53,5 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         model=model,
         workspace_id=request.workspace_id,
         workspace_manager=workspace_manager_module.workspace_manager,
+        profile=request.profile,
     )

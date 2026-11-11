@@ -30,6 +30,12 @@ def test_create_workspace(manager, origin_repo):
     assert info.status == WorkspaceStatus.READY
 
 
+def test_create_workspace_preserves_repository_line_endings(manager, origin_repo):
+    info = manager.create(origin_repo.as_uri())
+    raw = (Path(info.repository_path) / "Main.java").read_bytes()
+    assert raw == b"public class Main {}\n"
+
+
 def test_create_workspace_is_isolated(manager, origin_repo):
     first = manager.create(origin_repo.as_uri())
     second = manager.create(origin_repo.as_uri())

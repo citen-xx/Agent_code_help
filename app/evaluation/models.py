@@ -65,10 +65,17 @@ class BenchmarkTaskResult(BaseModel):
     tags: list[str] = Field(default_factory=list)
     success: bool
     public_tests_passed: bool = False
-    hidden_tests_passed: bool = True
+    hidden_tests_passed: bool | None = None
     hidden_failure_summary: str | None = None
     final_test_passed: bool
     modified_files: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    tool_calls: int = Field(default=0, ge=0)
+    last_agent_action: str = ""
+    tool_usage: dict[str, int] = Field(default_factory=dict)
+    tool_failure_counts: dict[str, int] = Field(default_factory=dict)
+    empty_patch_calls: int = Field(default=0, ge=0)
+    auto_maven_test_runs: int = Field(default=0, ge=0)
     repair_rounds: int = Field(default=0, ge=0)
     plan_revisions: list[PlanRevision] = Field(default_factory=list)
     duration_seconds: float = Field(ge=0)
@@ -100,6 +107,8 @@ class BenchmarkSummary(BaseModel):
     failed_tasks: int
     success_rate: float
     average_duration: float
+    average_llm_calls: float = 0.0
+    average_tokens: float | None = None
     average_repair_rounds: float
     average_plan_revisions: float
     average_changed_files: float
@@ -108,6 +117,10 @@ class BenchmarkSummary(BaseModel):
     total_tokens: int | None
     estimated_cost_usd: float | None
     public_test_success_rate: float
+    hidden_test_pass_rate: float = 0.0
+    medium_success_rate: float = 0.0
+    hard_success_rate: float = 0.0
+    hidden_tests_evaluated: int = Field(default=0, ge=0)
     hidden_test_success_rate: float
     success_by_difficulty: dict[str, float] = Field(default_factory=dict)
     success_by_tag: dict[str, float] = Field(default_factory=dict)
@@ -117,6 +130,12 @@ class BenchmarkReport(BaseModel):
     run_id: str
     started_at: str
     finished_at: str
+    model: str = "unknown"
+    benchmark: str = "unknown"
+    variant: str = "full"
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    git_commit: str | None = None
+    git_dirty: bool | None = None
     tasks: list[BenchmarkTask]
     results: list[BenchmarkTaskResult]
     summary: BenchmarkSummary

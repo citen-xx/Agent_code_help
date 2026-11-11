@@ -19,8 +19,8 @@ dist/
 .coverage
 htmlcov/
 
-# Benchmark generated reports
-evaluation/results/*.json
+# Benchmark generated reports and experiment artifacts
+evaluation/results/
 
 # IDE / OS
 .idea/

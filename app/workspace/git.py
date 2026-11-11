@@ -55,9 +55,20 @@ def run_git(args: list[str], cwd: Path | str, timeout: float = GIT_TIMEOUT_SECON
 
 
 def clone_repository(url: str, target_dir: Path, timeout: float) -> None:
-    """Clone ``url`` into ``target_dir`` (created fresh)."""
+    """Clone ``url`` into ``target_dir`` with repository-native line endings."""
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    run_git(["clone", "--quiet", url, str(target_dir)], cwd=target_dir.parent, timeout=timeout)
+    run_git(
+        [
+            "-c",
+            "core.autocrlf=false",
+            "clone",
+            "--quiet",
+            url,
+            str(target_dir),
+        ],
+        cwd=target_dir.parent,
+        timeout=timeout,
+    )
 
 
 def checkout_branch(repo: Path, branch: str) -> None:

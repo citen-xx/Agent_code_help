@@ -1,6 +1,7 @@
 """Phase 3 patch contract and A/B reporting tests."""
 
 from app.evaluation.phase3 import (
+    _normalize_control_recovery,
     _metric_delta,
     render_patch_contract_design,
 )
@@ -66,3 +67,48 @@ def test_metric_delta_uses_treatment_minus_control():
     assert delta["success_rate"]["delta"] == 0.9 - 0.8
     assert delta["apply_patch_failures"]["delta"] == -1
     assert delta["apply_patch_failure_rate"]["delta"] == -0.125
+
+
+def test_control_recovery_is_not_fabricated_from_missing_legacy_telemetry():
+    payload = {
+        "control": {
+            "metrics": {
+                "planner": {"metrics": {"recovered_patch_failures": 0}},
+                "full": {"metrics": {"recovered_patch_failures": 0}},
+            }
+        },
+        "treatment": {
+            "metrics": {
+                "planner": {"metrics": {"recovered_patch_failures": 0}},
+                "full": {"metrics": {"recovered_patch_failures": 0}},
+            }
+        },
+        "comparison": {
+            "planner": {},
+            "full": {},
+        },
+    }
+    control_json = {
+        "patch_failure_analysis": {
+            "records": [
+                {
+                    "source": "phase2_5_confirmation",
+                    "profile": "planner",
+                    "later_successful_patch": True,
+                },
+                {
+                    "source": "phase2_5_confirmation",
+                    "profile": "full",
+                    "later_successful_patch": True,
+                },
+            ]
+        }
+    }
+    _normalize_control_recovery(payload, control_json)
+    assert payload["control"]["metrics"]["planner"]["metrics"][
+        "recovered_patch_failures"
+    ] is None
+    assert payload["control"]["recovered_patch_failures_clean_confirmation"] == {
+        "planner": 1,
+        "full": 1,
+    }

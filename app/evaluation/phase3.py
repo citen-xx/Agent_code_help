@@ -415,6 +415,10 @@ def render_phase3_report(payload: dict) -> str:
     treatment_full = treatment["full"]["metrics"]
     control_planner = control["planner"]["metrics"]
     treatment_planner = treatment["planner"]["metrics"]
+    control_recovered = payload["control"].get(
+        "recovered_patch_failures_clean_confirmation",
+        {},
+    )
     def displayed(value, metric: str) -> str:
         if value is None:
             return "N/A"
@@ -488,10 +492,12 @@ def render_phase3_report(payload: dict) -> str:
             f"{control_full['apply_patch_failure_rate'] * 100:.1f}% → "
             f"{treatment_full['apply_patch_failure_rate'] * 100:.1f}%.",
             f"- Planner recovered failures: "
-            f"{control_planner['recovered_patch_failures']} (legacy partial) → "
+            f"unavailable in 3-run combined Control "
+            f"(clean confirmation: {control_recovered.get('planner', 'N/A')}) → "
             f"{treatment_planner['recovered_patch_failures']}.",
             f"- Full recovered failures: "
-            f"{control_full['recovered_patch_failures']} (legacy partial) → "
+            f"unavailable in 3-run combined Control "
+            f"(clean confirmation: {control_recovered.get('full', 'N/A')}) → "
             f"{treatment_full['recovered_patch_failures']}.",
             "",
             "## 8. Agent Efficiency",
@@ -578,6 +584,38 @@ def render_phase3_report(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def _normalize_control_recovery(payload: dict, control_json: dict) -> None:
+    detailed_records = control_json["patch_failure_analysis"]["records"]
+    clean_recovered = {
+        profile.value: sum(
+            1
+            for record in detailed_records
+            if record["source"] == "phase2_5_confirmation"
+            and record["profile"] == profile.value
+            and record["later_successful_patch"]
+        )
+        for profile in PROFILES
+    }
+    payload["control"]["recovered_patch_failures_clean_confirmation"] = (
+        clean_recovered
+    )
+    for profile in PROFILES:
+        profile_name = profile.value
+        control_metrics = payload["control"]["metrics"][profile_name]["metrics"]
+        treatment_value = payload["treatment"]["metrics"][profile_name][
+            "metrics"
+        ]["recovered_patch_failures"]
+        control_metrics["recovered_patch_failures"] = None
+        control_metrics["recovered_patch_failures_availability"] = (
+            "unavailable_combined_legacy_partial"
+        )
+        payload["comparison"][profile_name]["recovered_patch_failures"] = {
+            "control": None,
+            "treatment": treatment_value,
+            "delta": None,
+        }
+
+
 async def run_patch_reliability_experiment(
     *,
     output_dir: str | Path = DEFAULT_RESULTS_DIR,
@@ -662,6 +700,7 @@ async def run_patch_reliability_experiment(
         ]
         for profile in PROFILES
     }
+    _normalize_control_recovery(payload, control_json)
     _write_json(phase_dir / "experiment.json", payload)
     _write_json(phase_dir / "phase3_report.json", payload)
     _write(phase_dir / "phase3_report.md", render_phase3_report(payload))
@@ -680,6 +719,15 @@ def regenerate_phase3_report(
     payload = json.loads(
         (phase_dir / "experiment.json").read_text(encoding="utf-8")
     )
+    control_json = json.loads(
+        (
+            results_root.resolve()
+            / PHASE25_DIR_NAME
+            / "confirmation_report.json"
+        ).read_text(encoding="utf-8")
+    )
+    _normalize_control_recovery(payload, control_json)
+    _write_json(phase_dir / "experiment.json", payload)
     _write_json(phase_dir / "phase3_report.json", payload)
     report = phase_dir / "phase3_report.md"
     _write(report, render_phase3_report(payload))

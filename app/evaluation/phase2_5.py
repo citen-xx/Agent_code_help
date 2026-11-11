@@ -87,6 +87,13 @@ def _write_json(path: Path, payload: dict) -> None:
     )
 
 
+def _resolve_output_root(output_dir: str | Path) -> Path:
+    path = Path(output_dir).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
+
+
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -985,12 +992,13 @@ async def run_confirmation_experiment(
     output_dir: str | Path = DEFAULT_RESULTS_DIR,
     legacy_experiment: str | Path | None = None,
 ) -> Path:
-    phase_dir = Path(output_dir) / PHASE25_DIR_NAME
+    output_root = _resolve_output_root(output_dir)
+    phase_dir = output_root / PHASE25_DIR_NAME
     phase_dir.mkdir(parents=True, exist_ok=True)
     legacy_path = (
-        Path(legacy_experiment)
+        Path(legacy_experiment).expanduser().resolve()
         if legacy_experiment
-        else Path(output_dir) / LEGACY_EXPERIMENT_ID
+        else output_root / LEGACY_EXPERIMENT_ID
     )
     legacy_paths = _legacy_report_paths(legacy_path)
     if any(len(paths) != 2 for paths in legacy_paths.values()):

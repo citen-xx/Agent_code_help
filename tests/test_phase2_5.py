@@ -8,7 +8,9 @@ from app.evaluation.models import (
     BenchmarkTaskResult,
     FailureCategory,
 )
+from app.evaluation.tasks import PROJECT_ROOT
 from app.evaluation.phase2_5 import (
+    _resolve_output_root,
     _patch_records,
     _status_entries,
     _wilson_interval,
@@ -84,6 +86,12 @@ def test_wilson_interval_is_bounded_and_narrows():
 def test_clean_tree_status_ignores_branch_header():
     assert _status_entries("## main...origin/main [ahead 2]\n") == []
     assert _status_entries("## main\n M app.py\n") == [" M app.py"]
+
+
+def test_relative_output_root_is_project_absolute():
+    resolved = _resolve_output_root("evaluation/results")
+    assert resolved.is_absolute()
+    assert resolved == (PROJECT_ROOT / "evaluation" / "results").resolve()
 
 
 def test_patch_records_include_sequence_and_missing_history():

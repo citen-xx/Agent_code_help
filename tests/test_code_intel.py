@@ -211,7 +211,7 @@ def test_list_symbols_tool_filters_file_and_class(workspace, manager):
         )
     )
     assert [symbol["name"] for symbol in class_body["symbols"]] == ["create"]
-    assert class_body["symbols"][0]["file_path"].endswith("OrderService.java")
+    assert class_body["symbols"][0]["file"].endswith("OrderService.java")
     assert class_body["symbols"][0]["line_start"] >= 1
 
 
@@ -232,7 +232,7 @@ def test_find_symbol_returns_duplicate_and_overloaded_definitions(manager, origi
 
     body = json.loads(tools["find_symbol"].invoke({"name": "Duplicate"}))
     assert body["total"] == 2
-    assert {symbol["file_path"] for symbol in body["symbols"]} == {"A.java", "B.java"}
+    assert {symbol["file"] for symbol in body["symbols"]} == {"A.java", "B.java"}
 
     overloads = json.loads(
         tools["find_symbol"].invoke({"name": "run", "symbol_type": "method"})
@@ -245,8 +245,8 @@ def test_find_references_returns_usage_locations(workspace, manager):
     tools = _tools(workspace, manager)
     body = json.loads(tools["find_references"].invoke({"name": "OrderService"}))
     assert body["total"] >= 2
-    assert any(reference["file_path"].endswith("App.java") for reference in body["references"])
-    assert all(reference["line_start"] >= 1 for reference in body["references"])
+    assert any(reference["file"].endswith("App.java") for reference in body["references"])
+    assert all(reference["line"] >= 1 for reference in body["references"])
 
     with_definitions = json.loads(
         tools["find_references"].invoke(
@@ -254,7 +254,10 @@ def test_find_references_returns_usage_locations(workspace, manager):
         )
     )
     assert with_definitions["total"] > body["total"]
-    assert any(reference["is_definition"] for reference in with_definitions["references"])
+    assert any(
+        reference["context_type"] == "definition"
+        for reference in with_definitions["references"]
+    )
 
 
 def test_patch_refreshes_only_affected_java_file(workspace, manager, monkeypatch):
@@ -320,8 +323,8 @@ def test_syntax_error_isolated_in_index(manager, origin_repo):
 
     body = json.loads(tools["list_symbols"].invoke({}))
     assert any(symbol["name"] == "Valid" for symbol in body["symbols"])
-    assert not any(symbol["file_path"] == "Broken.java" for symbol in body["symbols"])
-    assert any(diagnostic["file_path"] == "Broken.java" for diagnostic in body["diagnostics"])
+    assert not any(symbol["file"] == "Broken.java" for symbol in body["symbols"])
+    assert any(diagnostic["file"] == "Broken.java" for diagnostic in body["diagnostics"])
 
 
 def test_workspace_isolation_and_safe_file_query(manager, origin_repo):
@@ -360,6 +363,15 @@ async def test_agent_can_use_symbol_tools(workspace, manager):
         script=[
             tool_call("find_symbol", {"name": "OrderService"}, "find_1"),
             tool_call("find_references", {"name": "OrderService"}, "refs_1"),
+            tool_call(
+                "read_file",
+                {
+                    "path": "src/main/java/com/example/OrderService.java",
+                    "start_line": 1,
+                    "end_line": 8,
+                },
+                "read_1",
+            ),
             AIMessage(content="已通过符号索引定位 OrderService。"),
         ]
     )
@@ -373,8 +385,13 @@ async def test_agent_can_use_symbol_tools(workspace, manager):
     assert result.answer == "已通过符号索引定位 OrderService。"
     tool_contents = "\n".join(
         message.content
-        for message in model.history[2]
+        for message in model.history[3]
         if message.type == "tool"
     )
     assert "OrderService.java" in tool_contents
     assert '"references"' in tool_contents
+    assert result.ci_telemetry["find_symbol"]["invocation_count"] == 1
+    assert result.ci_telemetry["find_references"]["invocation_count"] == 1
+    assert result.total_ci_output_chars > 0
+    assert result.read_file_calls == 1
+    assert result.follow_up_source_reads == 1

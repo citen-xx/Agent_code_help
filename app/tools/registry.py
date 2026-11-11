@@ -23,6 +23,16 @@ class _ReadFileArgs(BaseModel):
     """Arguments for read_file."""
 
     path: str = Field(description="Repository-relative path of the file to read.")
+    start_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional 1-based first line for a precise source read.",
+    )
+    end_line: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional inclusive last line; at most 200 lines are returned.",
+    )
 
 
 class _SearchCodeArgs(BaseModel):
@@ -38,8 +48,17 @@ def create_repo_tools(repository_path: str | Path) -> list[BaseTool]:
     def _list_files(path: str = ".") -> str:
         return list_files(repository_path, path)
 
-    def _read_file(path: str) -> str:
-        return read_file(repository_path, path)
+    def _read_file(
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> str:
+        return read_file(
+            repository_path,
+            path,
+            start_line=start_line,
+            end_line=end_line,
+        )
 
     def _search_code(query: str, file_pattern: str = "*") -> str:
         return search_code(repository_path, query, file_pattern)
@@ -58,7 +77,8 @@ def create_repo_tools(repository_path: str | Path) -> list[BaseTool]:
             name="read_file",
             description=(
                 "Read the content of a single file inside the repository. "
-                "Read-only. Use it to inspect Java source code."
+                "Read-only. For a known symbol location, provide start_line and "
+                "end_line to fetch only the relevant source range."
             ),
             func=_read_file,
             args_schema=_ReadFileArgs,

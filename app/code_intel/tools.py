@@ -7,6 +7,20 @@ from typing import TYPE_CHECKING
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.code_intel.compact import (
+    DEFAULT_CALL_LIMIT,
+    DEFAULT_IMPACT_LIMIT,
+    DEFAULT_REFERENCE_LIMIT,
+    DEFAULT_SYMBOL_LIMIT,
+    MAX_CALL_LIMIT,
+    MAX_IMPACT_LIMIT,
+    MAX_REFERENCE_LIMIT,
+    MAX_SYMBOL_LIMIT,
+    compact_call_result,
+    compact_impact_result,
+    compact_reference_result,
+    compact_symbol_result,
+)
 from app.code_intel.models import JavaSymbolType
 from app.code_intel.registry import get_or_build_index
 from app.tools.repo import ToolError
@@ -32,7 +46,7 @@ class _ListSymbolsArgs(BaseModel):
         default=None,
         description="Optional symbol type filter.",
     )
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=DEFAULT_SYMBOL_LIMIT, ge=1, le=MAX_SYMBOL_LIMIT)
 
 
 class _FindSymbolArgs(BaseModel):
@@ -41,7 +55,7 @@ class _FindSymbolArgs(BaseModel):
     name: str = Field(min_length=1, description="Exact symbol name.")
     symbol_type: JavaSymbolType | None = None
     file_path: str | None = None
-    limit: int = Field(default=50, ge=1, le=200)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class _FindReferencesArgs(BaseModel):
@@ -50,7 +64,7 @@ class _FindReferencesArgs(BaseModel):
     name: str = Field(min_length=1, description="Exact identifier name.")
     file_path: str | None = None
     include_definitions: bool = False
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=DEFAULT_REFERENCE_LIMIT, ge=1, le=MAX_REFERENCE_LIMIT)
 
 
 class _FindCallersArgs(BaseModel):
@@ -59,7 +73,7 @@ class _FindCallersArgs(BaseModel):
     method_name: str = Field(min_length=1)
     class_name: str | None = None
     file_path: str | None = None
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=DEFAULT_CALL_LIMIT, ge=1, le=MAX_CALL_LIMIT)
 
 
 class _FindCalleesArgs(BaseModel):
@@ -68,7 +82,7 @@ class _FindCalleesArgs(BaseModel):
     method_name: str = Field(min_length=1)
     class_name: str | None = None
     file_path: str | None = None
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=DEFAULT_CALL_LIMIT, ge=1, le=MAX_CALL_LIMIT)
 
 
 class _AnalyzeImpactArgs(BaseModel):
@@ -76,7 +90,7 @@ class _AnalyzeImpactArgs(BaseModel):
 
     name: str = Field(min_length=1, description="Class or method name.")
     depth: int = Field(default=1, ge=1, le=2)
-    limit: int = Field(default=200, ge=1, le=500)
+    limit: int = Field(default=DEFAULT_IMPACT_LIMIT, ge=1, le=MAX_IMPACT_LIMIT)
 
 
 def create_code_intel_tools(
@@ -102,7 +116,7 @@ def create_code_intel_tools(
         file_path: str | None = None,
         class_name: str | None = None,
         symbol_type: JavaSymbolType | None = None,
-        limit: int = 200,
+        limit: int = DEFAULT_SYMBOL_LIMIT,
     ) -> str:
         try:
             result = _index().list_symbols(
@@ -113,13 +127,13 @@ def create_code_intel_tools(
             )
         except Exception as exc:
             raise ToolError(f"Java 符号索引失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_symbol_result(result, limit=limit)
 
     def _find_symbol(
         name: str,
         symbol_type: JavaSymbolType | None = None,
         file_path: str | None = None,
-        limit: int = 50,
+        limit: int = 20,
     ) -> str:
         try:
             result = _index().find_symbol(
@@ -130,13 +144,13 @@ def create_code_intel_tools(
             )
         except Exception as exc:
             raise ToolError(f"Java 符号查询失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_symbol_result(result, limit=limit)
 
     def _find_references(
         name: str,
         file_path: str | None = None,
         include_definitions: bool = False,
-        limit: int = 200,
+        limit: int = DEFAULT_REFERENCE_LIMIT,
     ) -> str:
         try:
             result = _index().find_references(
@@ -147,13 +161,13 @@ def create_code_intel_tools(
             )
         except Exception as exc:
             raise ToolError(f"Java 引用查询失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_reference_result(result, limit=limit)
 
     def _find_callers(
         method_name: str,
         class_name: str | None = None,
         file_path: str | None = None,
-        limit: int = 200,
+        limit: int = DEFAULT_CALL_LIMIT,
     ) -> str:
         try:
             result = _index().find_callers(
@@ -164,13 +178,13 @@ def create_code_intel_tools(
             )
         except Exception as exc:
             raise ToolError(f"Java caller 查询失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_call_result(result, limit=limit)
 
     def _find_callees(
         method_name: str,
         class_name: str | None = None,
         file_path: str | None = None,
-        limit: int = 200,
+        limit: int = DEFAULT_CALL_LIMIT,
     ) -> str:
         try:
             result = _index().find_callees(
@@ -181,18 +195,18 @@ def create_code_intel_tools(
             )
         except Exception as exc:
             raise ToolError(f"Java callee 查询失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_call_result(result, limit=limit)
 
     def _analyze_impact(
         name: str,
         depth: int = 1,
-        limit: int = 200,
+        limit: int = DEFAULT_IMPACT_LIMIT,
     ) -> str:
         try:
             result = _index().analyze_impact(name, depth=depth, limit=limit)
         except Exception as exc:
             raise ToolError(f"Java impact 分析失败: {exc}") from exc
-        return result.model_dump_json(indent=2)
+        return compact_impact_result(result, limit=limit)
 
     logger.debug("Binding Java code intelligence to workspace %s", workspace_id)
     return [
@@ -200,7 +214,9 @@ def create_code_intel_tools(
             name="list_symbols",
             description=(
                 "List Java symbols in the bound workspace, optionally filtered "
-                "by file, class, or symbol type. Read-only Tree-sitter index."
+                "by file, class, or symbol type. Returns compact declaration "
+                "locations by default; use read_file for source bodies. Results "
+                "include returned/total/truncated metadata."
             ),
             func=_list_symbols,
             args_schema=_ListSymbolsArgs,
@@ -208,8 +224,9 @@ def create_code_intel_tools(
         StructuredTool.from_function(
             name="find_symbol",
             description=(
-                "Find exact Java symbol definitions by name and return every "
-                "matching overload/nested/duplicate result with file and lines."
+                "Find exact Java symbol declarations by name. Returns compact "
+                "locations and signatures, not source bodies. Use read_file for "
+                "the relevant line range."
             ),
             func=_find_symbol,
             args_schema=_FindSymbolArgs,
@@ -218,7 +235,8 @@ def create_code_intel_tools(
             name="find_references",
             description=(
                 "Find identifier references to a Java symbol name in the bound "
-                "workspace. Definition hits can be included explicitly."
+                "workspace. Returns compact one-line locations. Definition hits "
+                "can be included explicitly."
             ),
             func=_find_references,
             args_schema=_FindReferencesArgs,
@@ -227,7 +245,8 @@ def create_code_intel_tools(
             name="find_callers",
             description=(
                 "Find methods that call the specified Java method. Returns call "
-                "sites, caller class/method, candidates, and ambiguity flags."
+                "sites with compact caller metadata and at most three candidate "
+                "declarations. Use read_file for source logic."
             ),
             func=_find_callers,
             args_schema=_FindCallersArgs,
@@ -236,7 +255,7 @@ def create_code_intel_tools(
             name="find_callees",
             description=(
                 "Find method calls made inside the specified Java method. Returns "
-                "structured call sites and candidate callee definitions."
+                "compact call sites and at most three candidate declarations."
             ),
             func=_find_callees,
             args_schema=_FindCalleesArgs,
@@ -245,7 +264,8 @@ def create_code_intel_tools(
             name="analyze_impact",
             description=(
                 "Analyze likely impacted callers, test references, and related "
-                "same-class methods for a class or method. Depth is limited to 2."
+                "same-class methods. Returns compact, budgeted sections with "
+                "counts and truncation metadata. Depth is limited to 2."
             ),
             func=_analyze_impact,
             args_schema=_AnalyzeImpactArgs,

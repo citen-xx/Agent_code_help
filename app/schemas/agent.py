@@ -78,6 +78,13 @@ class AnalyzeResponse(BaseModel):
     successful_patch_replacements: int = Field(default=0, ge=0)
     failed_patch_replacement_indices: list[int] = Field(default_factory=list)
     recovered_patch_failures: int = Field(default=0, ge=0)
+    ci_telemetry: dict = Field(
+        default_factory=dict,
+        description="Per-tool compact Code Intelligence output telemetry.",
+    )
+    total_ci_output_chars: int = Field(default=0, ge=0)
+    read_file_calls: int = Field(default=0, ge=0)
+    follow_up_source_reads: int = Field(default=0, ge=0)
     modified_files: list[str] = Field(
         default_factory=list,
         description="Files changed by the Agent in this run.",

@@ -379,6 +379,14 @@ class BenchmarkRunner:
             recovered_patch_failures=(
                 response.recovered_patch_failures if response else 0
             ),
+            ci_telemetry=dict(response.ci_telemetry) if response else {},
+            total_ci_output_chars=(
+                response.total_ci_output_chars if response else 0
+            ),
+            read_file_calls=response.read_file_calls if response else 0,
+            follow_up_source_reads=(
+                response.follow_up_source_reads if response else 0
+            ),
             repair_rounds=response.repair_rounds if response else 0,
             plan_revisions=list(response.plan_revisions) if response else [],
             duration_seconds=round(time.monotonic() - started, 3),

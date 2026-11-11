@@ -548,6 +548,25 @@ uv run python -m app.evaluation patch-ablation
 
 结果写入 `evaluation/results/phase3_patch_reliability/`。
 
+### Compact Code Intelligence Context
+
+Code Intelligence 默认使用 deterministic progressive disclosure：
+
+- symbol/reference/call 工具返回紧凑位置、短 signature 和关系；
+- 不返回 method body；
+- 每类结果有数量、字符预算和显式 `returned/total/truncated`；
+- `analyze_impact` 按 direct callers、test references、related methods 分组预算；
+- `read_file` 支持 `start_line/end_line`，用于按需读取源码；
+- telemetry 记录 CI 输出字符、结果数、截断、重复过滤和 follow-up source reads。
+
+运行 Phase 4 Control / Treatment A/B：
+
+```bash
+uv run python -m app.evaluation context-ab
+```
+
+结果写入 `evaluation/results/phase4_context_engineering/`。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

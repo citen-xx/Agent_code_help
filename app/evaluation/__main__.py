@@ -16,6 +16,10 @@ from app.evaluation.phase3 import (
     regenerate_phase3_report,
     run_patch_reliability_experiment,
 )
+from app.evaluation.phase4 import (
+    regenerate_phase4_report,
+    run_context_ab,
+)
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -106,6 +110,22 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    context_ab = subparsers.add_parser(
+        "context-ab",
+        help="Run Phase 4 compact Code Intelligence A/B",
+    )
+    context_ab.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    context_report = subparsers.add_parser(
+        "context-report",
+        help="Regenerate Phase 4 report from experiment.json",
+    )
+    context_report.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -164,6 +184,20 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(f"Phase 3 report: {report}")
+        return 0
+    if args.command == "context-ab":
+        report = asyncio.run(
+            run_context_ab(
+                output_dir=Path(args.output_dir),
+            )
+        )
+        print(f"Phase 4 report: {report}")
+        return 0
+    if args.command == "context-report":
+        report = regenerate_phase4_report(
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 4 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

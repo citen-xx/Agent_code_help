@@ -38,7 +38,9 @@ def test_list_files_missing_path_raises(repo):
 
 
 def test_read_file_returns_content(repo):
-    assert read_file(repo, "src/Main.java") == "public class Main {}\n"
+    assert read_file(repo, "src/Main.java") == (
+        repo / "src/Main.java"
+    ).read_bytes().decode("utf-8")
 
 
 def test_read_file_missing_raises(repo):
@@ -65,7 +67,20 @@ def test_path_traversal_blocked(repo, tmp_path):
 
 
 def test_parent_refs_inside_repo_are_allowed(repo):
-    assert read_file(repo, "src/../src/Main.java") == "public class Main {}\n"
+    assert read_file(repo, "src/../src/Main.java") == (
+        repo / "src/Main.java"
+    ).read_bytes().decode("utf-8")
+
+
+def test_read_file_line_range_preserves_bytes_and_crlf(repo):
+    path = repo / "src/Main.java"
+    path.write_bytes(b"line one\r\nline two\r\nline three\r\n")
+    assert read_file(repo, "src/Main.java", start_line=2, end_line=2) == (
+        b"line two\r\n"
+    ).decode("utf-8")
+    assert read_file(repo, "src/Main.java", start_line=2) == (
+        b"line two\r\nline three\r\n"
+    ).decode("utf-8")
 
 
 def test_resolve_inside_blocks_traversal(repo):

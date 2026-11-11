@@ -26,3 +26,8 @@ class ToolEvent(BaseModel):
     replacements_requested: int = Field(default=0, ge=0)
     successful_replacements: int = Field(default=0, ge=0)
     failed_replacement_index: int | None = Field(default=None, ge=1)
+    result_count: int = Field(default=0, ge=0)
+    truncated: bool = False
+    duplicate_results_removed: int = Field(default=0, ge=0)
+    read_start_line: int | None = Field(default=None, ge=1)
+    read_end_line: int | None = Field(default=None, ge=1)

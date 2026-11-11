@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 MAX_LIST_ENTRIES = 200
 MAX_READ_CHARS = 100_000
+MAX_READ_LINES = 200
 MAX_SEARCH_RESULTS = 50
 IGNORED_DIRS = {
     ".git", ".svn", ".hg",
@@ -62,7 +63,12 @@ def list_files(repository_path: str | Path, path: str = ".") -> str:
     return "\n".join(lines)
 
 
-def read_file(repository_path: str | Path, path: str) -> str:
+def read_file(
+    repository_path: str | Path,
+    path: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
     """Read a file inside the repository (truncated if very large)."""
     target = resolve_inside(repository_path, path)
     if not target.exists():
@@ -70,9 +76,27 @@ def read_file(repository_path: str | Path, path: str) -> str:
     if not target.is_file():
         raise ToolError(f"不是文件: {path}")
     try:
-        text = target.read_text(encoding="utf-8", errors="replace")
+        with target.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            text = handle.read()
     except OSError as exc:
         raise ToolError(f"读取文件失败 {path}: {exc}") from exc
+    if start_line is not None or end_line is not None:
+        start = start_line or 1
+        if start < 1:
+            raise ToolError("start_line 必须 >= 1")
+        if end_line is not None and end_line < start:
+            raise ToolError("end_line 必须 >= start_line")
+        end = end_line or (start + MAX_READ_LINES - 1)
+        if end - start + 1 > MAX_READ_LINES:
+            end = start + MAX_READ_LINES - 1
+        lines = text.splitlines(keepends=True)
+        selected = "".join(lines[start - 1 : end])
+        if len(selected) > MAX_READ_CHARS:
+            selected = (
+                selected[:MAX_READ_CHARS]
+                + "\n...[file range truncated]"
+            )
+        return selected
     if len(text) > MAX_READ_CHARS:
         text = text[:MAX_READ_CHARS] + "\n...[file truncated]"
     return text

@@ -210,7 +210,7 @@ def test_find_callers_and_callees(workspace, manager):
         )
     )
     assert callees["total"] == 1
-    assert callees["calls"][0]["callee_name"] == "multiply"
+    assert callees["calls"][0]["callee"] == "multiply"
     assert callees["calls"][0]["line"] >= 1
     assert callees["calls"][0]["candidates"][0]["name"] == "multiply"
 
@@ -223,7 +223,7 @@ def test_one_method_multiple_callees(workspace, manager):
         )
     )
     assert body["total"] == 3
-    assert {call["callee_name"] for call in body["calls"]} == {"target", "other"}
+    assert {call["callee"] for call in body["calls"]} == {"target", "other"}
 
 
 def test_overloaded_and_ambiguous_calls_are_marked(workspace, manager):
@@ -250,10 +250,8 @@ def test_overloaded_and_ambiguous_calls_are_marked(workspace, manager):
     ]
     assert ambiguous_calls
     assert any(call["ambiguous"] for call in ambiguous_calls)
-    assert {candidate["containing_class"] for candidate in ambiguous_calls[0]["candidates"]} >= {
-        "WorkA",
-        "WorkB",
-    }
+    assert ambiguous_calls[0]["candidate_count"] >= 2
+    assert len(ambiguous_calls[0]["candidates"]) <= 3
 
 
 def test_nested_class_call_is_attributed_to_inner_class(workspace, manager):
@@ -267,7 +265,7 @@ def test_nested_class_call_is_attributed_to_inner_class(workspace, manager):
     call = body["calls"][0]
     assert call["containing_class"] == "Outer.Inner"
     assert call["containing_method"] == "innerCall"
-    assert call["callee_name"] == "target"
+    assert call["callee"] == "target"
 
 
 def test_analyze_impact_depth_and_test_references(workspace, manager):
@@ -279,20 +277,20 @@ def test_analyze_impact_depth_and_test_references(workspace, manager):
     assert body["depth"] == 2
     assert body["test_references"]
     assert all(
-        "src/test/java" in reference["file_path"]
+        "src/test/java" in reference["file"]
         for reference in body["test_references"]
     )
     impacted = {
         (
             item["depth"],
-            item["call"]["containing_class"],
-            item["call"]["containing_method"],
+                item["containing_class"],
+                item["containing_method"],
         )
-        for item in body["impacted_callers"]
+        for item in body["direct_callers"]
     }
     assert (1, "PriceService", "calculate") in impacted
     assert (2, "OrderService", "create") in impacted
-    assert any(item["in_test"] for item in body["impacted_callers"])
+    assert any(item["in_test"] for item in body["direct_callers"])
     assert any(method["name"] == "add" for method in body["related_methods"])
 
 
@@ -302,10 +300,10 @@ def test_analyze_impact_accepts_class_name(workspace, manager):
         tools["analyze_impact"].invoke({"name": "Calculator", "depth": 1})
     )
     assert body["mode"] == "class"
-    assert body["targets"][0]["symbol_type"] == "class"
+    assert body["targets"][0]["kind"] == "class"
     assert any(
-        item["call"]["containing_class"] == "PriceService"
-        for item in body["impacted_callers"]
+        item["containing_class"] == "PriceService"
+        for item in body["direct_callers"]
     )
     assert {method["name"] for method in body["related_methods"]} >= {
         "add",
@@ -321,7 +319,7 @@ def test_patch_refreshes_call_graph(workspace, manager):
             {"method_name": "calculate", "class_name": "PriceService"}
         )
     )
-    assert before["calls"][0]["callee_name"] == "multiply"
+    assert before["calls"][0]["callee"] == "multiply"
 
     patch = {
         tool.name: tool
@@ -352,7 +350,7 @@ def test_patch_refreshes_call_graph(workspace, manager):
             {"method_name": "calculate", "class_name": "PriceService"}
         )
     )
-    assert after["calls"][0]["callee_name"] == "add"
+    assert after["calls"][0]["callee"] == "add"
     callers = json.loads(
         tools["find_callers"].invoke(
             {"method_name": "multiply", "class_name": "Calculator"}
@@ -370,11 +368,11 @@ def test_syntax_error_removes_only_file_call_graph(manager, origin_repo):
     _write(repo, "Broken.java", "class Broken { void caller( { target(); }\n")
     tools = _tools(info, manager)
     body = json.loads(tools["find_callers"].invoke({"method_name": "target"}))
-    assert any(call["file_path"] == "Valid.java" for call in body["calls"])
-    assert all(call["file_path"] != "Broken.java" for call in body["calls"])
+    assert any(call["file"] == "Valid.java" for call in body["calls"])
+    assert all(call["file"] != "Broken.java" for call in body["calls"])
     listing = json.loads(tools["list_symbols"].invoke({}))
     assert any(
-        diagnostic["file_path"] == "Broken.java"
+        diagnostic["file"] == "Broken.java"
         for diagnostic in listing["diagnostics"]
     )
 
@@ -400,8 +398,8 @@ def test_call_graph_is_workspace_isolated(manager, origin_repo):
     second_calls = json.loads(
         second_tools["find_callers"].invoke({"method_name": "target"})
     )
-    assert {call["file_path"] for call in first_calls["calls"]} == {"First.java"}
-    assert {call["file_path"] for call in second_calls["calls"]} == {"Second.java"}
+    assert {call["file"] for call in first_calls["calls"]} == {"First.java"}
+    assert {call["file"] for call in second_calls["calls"]} == {"Second.java"}
 
 
 async def test_agent_prompt_tools_include_impact(workspace, manager):
@@ -465,7 +463,7 @@ async def test_agent_prompt_tools_include_impact(workspace, manager):
         if isinstance(message, ToolMessage)
     ]
     combined = "\n".join(message.content for message in tool_messages)
-    assert "impacted_callers" in combined
+    assert "direct_callers" in combined
     assert "PriceService" in combined
     assert result.repair_plan is not None
     assert result.repair_plan.impacted_files == [

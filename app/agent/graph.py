@@ -141,6 +141,34 @@ def _target_file(tool_name: str, arguments: dict) -> str | None:
     return None
 
 
+def _result_files(payload: dict | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    candidates: list[dict] = []
+    for key in (
+        "symbols",
+        "references",
+        "calls",
+        "targets",
+        "direct_callers",
+        "test_references",
+        "related_methods",
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates.extend(
+                item for item in value if isinstance(item, dict)
+            )
+    paths = list(
+        dict.fromkeys(
+            str(item["file"])
+            for item in candidates
+            if item.get("file")
+        )
+    )
+    return ", ".join(paths[:20]) or None
+
+
 def _classify_patch_error(content: str) -> PatchErrorCategory:
     try:
         body = json.loads(content)
@@ -215,6 +243,9 @@ def _tool_event(
     )
     successful_replacements = 0
     failed_replacement_index = None
+    result_count = 0
+    truncated = False
+    duplicate_results_removed = 0
     try:
         body = json.loads(content)
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -223,15 +254,35 @@ def _tool_event(
         successful_replacements = int(body.get("successful_replacements") or 0)
         index_value = body.get("replacement_index")
         failed_replacement_index = int(index_value) if index_value else None
+        returned = body.get("returned")
+        if isinstance(returned, dict):
+            result_count = sum(int(value) for value in returned.values())
+        elif returned is not None:
+            result_count = int(returned)
+        elif body.get("result_count") is not None:
+            result_count = int(body["result_count"])
+        else:
+            result_count = len(body.get("affected_files", []))
+        truncated = bool(body.get("truncated"))
+        duplicate_results_removed = int(
+            body.get("duplicates_removed")
+            or body.get("duplicate_results_removed")
+            or 0
+        )
         if not success and body.get("message"):
             summary = str(body["message"])[:500]
+    target_file = _target_file(tool_name, arguments)
+    if target_file is None and isinstance(body, dict):
+        target_file = _result_files(body)
+    start_line = arguments.get("start_line")
+    end_line = arguments.get("end_line")
     return ToolEvent(
         tool_call_index=index,
         step=step,
         repair_round=repair_round,
         tool_name=tool_name,
         call_id=call_id,
-        target_file=_target_file(tool_name, arguments),
+        target_file=target_file,
         success=success,
         invoked=invoked,
         error_category=category,
@@ -244,6 +295,11 @@ def _tool_event(
         replacements_requested=replacements_requested,
         successful_replacements=successful_replacements,
         failed_replacement_index=failed_replacement_index,
+        result_count=result_count,
+        truncated=truncated,
+        duplicate_results_removed=duplicate_results_removed,
+        read_start_line=int(start_line) if start_line else None,
+        read_end_line=int(end_line) if end_line else None,
     )
 
 
@@ -353,6 +409,67 @@ def _patch_telemetry(events: list[ToolEvent]) -> dict:
             if not event.success and event.failed_replacement_index is not None
         ],
         "recovered_patch_failures": recovered,
+    }
+
+
+CI_TOOL_NAMES = {
+    "list_symbols",
+    "find_symbol",
+    "find_references",
+    "find_callers",
+    "find_callees",
+    "analyze_impact",
+}
+
+
+def _ci_telemetry(events: list[ToolEvent]) -> dict:
+    per_tool: dict[str, dict] = {}
+    known_ci_files: set[str] = set()
+    follow_up_source_reads = 0
+    read_file_calls = 0
+    for event in events:
+        if event.tool_name == "read_file":
+            read_file_calls += 1
+            if event.target_file in known_ci_files:
+                follow_up_source_reads += 1
+        if event.tool_name not in CI_TOOL_NAMES:
+            continue
+        for path in (event.target_file or "").split(","):
+            if path.strip():
+                known_ci_files.add(path.strip())
+        stats = per_tool.setdefault(
+            event.tool_name,
+            {
+                "invocation_count": 0,
+                "output_chars": 0,
+                "result_count": 0,
+                "truncated_count": 0,
+                "duplicate_results_removed": 0,
+                "max_output_chars": 0,
+            },
+        )
+        stats["invocation_count"] += 1
+        stats["output_chars"] += event.output_chars
+        stats["result_count"] += event.result_count
+        stats["truncated_count"] += int(event.truncated)
+        stats["duplicate_results_removed"] += event.duplicate_results_removed
+        stats["max_output_chars"] = max(
+            stats["max_output_chars"],
+            event.output_chars,
+        )
+    for stats in per_tool.values():
+        stats["avg_output_chars"] = (
+            stats["output_chars"] / stats["invocation_count"]
+            if stats["invocation_count"]
+            else 0.0
+        )
+    return {
+        "per_tool": per_tool,
+        "total_ci_output_chars": sum(
+            stats["output_chars"] for stats in per_tool.values()
+        ),
+        "read_file_calls": read_file_calls,
+        "follow_up_source_reads": follow_up_source_reads,
     }
 
 
@@ -783,6 +900,7 @@ async def run_agent(
     ) = _execution_metrics(result.get("messages", []))
     tool_events = list(result.get("tool_events", []))
     patch_metrics = _patch_telemetry(tool_events)
+    ci_metrics = _ci_telemetry(tool_events)
     latest_test = result.get("test_result")
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
@@ -852,6 +970,10 @@ async def run_agent(
         tool_events=tool_events,
         tool_output_chars=sum(event.output_chars for event in tool_events),
         **patch_metrics,
+        ci_telemetry=ci_metrics["per_tool"],
+        total_ci_output_chars=ci_metrics["total_ci_output_chars"],
+        read_file_calls=ci_metrics["read_file_calls"],
+        follow_up_source_reads=ci_metrics["follow_up_source_reads"],
         modified_files=modified_files,
         repair_rounds=result.get("repair_rounds", 0),
         test_result=latest_test,

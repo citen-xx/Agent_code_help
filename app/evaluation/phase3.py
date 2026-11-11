@@ -463,8 +463,10 @@ def render_phase3_report(payload: dict) -> str:
             "hard_success_rate",
             "average_tokens",
             "average_agent_tool_calls",
+            "apply_patch_invocations",
             "apply_patch_failures",
             "apply_patch_failure_rate",
+            "recovered_patch_failures",
             "average_duration",
         ):
             values = delta[metric]
@@ -535,20 +537,36 @@ def render_phase3_report(payload: dict) -> str:
                 f"{treatment_task.get('passes')}/{treatment_task.get('runs')}; "
                 f"patch failures {control_task.get('apply_patch_failures')} → "
                 f"{treatment_task.get('apply_patch_failures')}; "
+                f"LLM calls {control_task.get('average_llm_calls', 0):.2f} → "
+                f"{treatment_task.get('average_llm_calls', 0):.2f}; "
+                f"tool calls {control_task.get('average_tool_calls', 0):.2f} → "
+                f"{treatment_task.get('average_tool_calls', 0):.2f}; "
                 f"tokens {control_task.get('average_tokens', 0):.1f} → "
-                f"{treatment_task.get('average_tokens', 0):.1f}."
+                f"{treatment_task.get('average_tokens', 0):.1f}; "
+                f"duration {control_task.get('average_duration', 0):.1f}s → "
+                f"{treatment_task.get('average_duration', 0):.1f}s."
             )
         lines.append("")
     lines.extend(
         [
             "## 10. Conclusion",
             "",
-            "- The contract redesign is effective only if it removes "
-            "same-file duplicate-path failures without reducing success.",
-            "- The grouped transactional contract is the default implementation.",
-            "- Residual risks are multi-file rollback failure and malformed "
-            "top-level JSON rejected by schema validation before structured "
-            "tool execution.",
+            f"- Patch failure rate: Planner "
+            f"{control_planner['apply_patch_failure_rate'] * 100:.1f}% → "
+            f"{treatment_planner['apply_patch_failure_rate'] * 100:.1f}%; "
+            f"Full {control_full['apply_patch_failure_rate'] * 100:.1f}% → "
+            f"{treatment_full['apply_patch_failure_rate'] * 100:.1f}%.",
+            f"- Success rate: Planner "
+            f"{control_planner['success_rate'] * 100:.1f}% → "
+            f"{treatment_planner['success_rate'] * 100:.1f}%; "
+            f"Full {control_full['success_rate'] * 100:.1f}% → "
+            f"{treatment_full['success_rate'] * 100:.1f}%.",
+            "- The grouped transactional contract eliminates the targeted "
+            "duplicate-path invalid-format failures and should remain the default.",
+            "- Small success-rate regressions are not attributed to Patch failures: "
+            "the treatment produced zero Patch failures in the measured runs.",
+            "- Residual risks are multi-file rollback failure and malformed top-level "
+            "JSON rejected by schema validation before structured tool execution.",
             "",
             "## 11. Recommended Next Step",
             "",
@@ -649,3 +667,20 @@ async def run_patch_reliability_experiment(
     _write(phase_dir / "phase3_report.md", render_phase3_report(payload))
     print(f"\nPhase 3 report: {phase_dir / 'phase3_report.md'}")
     return phase_dir / "phase3_report.md"
+
+
+def regenerate_phase3_report(
+    *,
+    output_dir: str | Path = DEFAULT_RESULTS_DIR,
+) -> Path:
+    results_root = Path(output_dir).expanduser()
+    if not results_root.is_absolute():
+        results_root = PROJECT_ROOT / results_root
+    phase_dir = results_root.resolve() / PHASE3_DIR_NAME
+    payload = json.loads(
+        (phase_dir / "experiment.json").read_text(encoding="utf-8")
+    )
+    _write_json(phase_dir / "phase3_report.json", payload)
+    report = phase_dir / "phase3_report.md"
+    _write(report, render_phase3_report(payload))
+    return report

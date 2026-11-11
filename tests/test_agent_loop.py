@@ -59,11 +59,15 @@ async def test_legacy_repository_mode_has_no_patch_tool(repo):
         tool_call(
             "apply_patch",
             {
-                "changes": [
+                "files": [
                     {
                         "path": "Main.java",
-                        "old_text": "public class Main {}",
-                        "new_text": "public class Main { int changed; }",
+                        "replacements": [
+                            {
+                                "old_text": "public class Main {}",
+                                "new_text": "public class Main { int changed; }",
+                            }
+                        ],
                     }
                 ]
             },

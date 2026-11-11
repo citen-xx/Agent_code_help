@@ -27,41 +27,93 @@ def _tool(workspace, manager):
     }["apply_patch"]
 
 
+def _payload(path: str, *pairs: tuple[str, str]) -> dict:
+    return {
+        "files": [
+            {
+                "path": path,
+                "replacements": [
+                    {"old_text": old, "new_text": new}
+                    for old, new in pairs
+                ],
+            }
+        ]
+    }
+
+
 def test_apply_patch_tool_is_bound_and_returns_diff(workspace, manager):
     tool = _tool(workspace, manager)
+    assert "replacements[]" in tool.description
+    assert "exactly once" in tool.description
     body = json.loads(
         tool.invoke(
-            {
-                "changes": [
-                    {
-                        "path": "Main.java",
-                        "old_text": "public class Main {}",
-                        "new_text": "public class Main { int patched; }",
-                    }
-                ]
-            }
+            _payload(
+                "Main.java",
+                ("public class Main {}", "public class Main { int patched; }"),
+            )
         )
     )
     assert body["success"] is True
     assert body["affected_files"] == ["Main.java"]
+    assert body["files_requested"] == 1
+    assert body["replacements_requested"] == 1
+    assert body["successful_replacements"] == 1
     assert "diff --git" in body["diff"]
+
+
+def test_apply_patch_tool_supports_multiple_replacements_per_file(
+    workspace,
+    manager,
+):
+    tool = _tool(workspace, manager)
+    body = json.loads(
+        tool.invoke(
+            _payload(
+                "Main.java",
+                ("public class Main {}", "public class Main { int a; }"),
+                (
+                    "public class Main { int a; }",
+                    "public class Main { int a; int b; }",
+                ),
+            )
+        )
+    )
+    assert body["success"] is True
+    assert body["successful_replacements"] == 2
+    assert "int a; int b;" in (
+        Path(workspace.repository_path) / "Main.java"
+    ).read_text(encoding="utf-8")
+
+
+def test_apply_patch_tool_returns_structured_failure(workspace, manager):
+    tool = _tool(workspace, manager)
+    before = (Path(workspace.repository_path) / "Main.java").read_bytes()
+    body = json.loads(
+        tool.invoke(
+            _payload(
+                "Main.java",
+                ("public class Main {}", "public class Main { int a; }"),
+                ("missing", "replacement"),
+            )
+        )
+    )
+    assert body["success"] is False
+    assert body["error_category"] == "old_text_not_found"
+    assert body["file"] == "Main.java"
+    assert body["replacement_index"] == 2
+    assert body["successful_replacements"] == 0
+    assert (Path(workspace.repository_path) / "Main.java").read_bytes() == before
 
 
 def test_apply_patch_tool_rejects_arbitrary_arguments(workspace, manager):
     tool = _tool(workspace, manager)
+    payload = _payload(
+        "Main.java",
+        ("public class Main {}", "public class Main { int patched; }"),
+    )
+    payload["files"][0]["replacements"][0]["absolute"] = True
     with pytest.raises(ValidationError):
-        tool.invoke(
-            {
-                "changes": [
-                    {
-                        "path": "Main.java",
-                        "old_text": "public class Main {}",
-                        "new_text": "public class Main { int patched; }",
-                        "absolute": True,
-                    }
-                ]
-            }
-        )
+        tool.invoke(payload)
 
 
 def test_apply_patch_tool_requires_matching_workspace(workspace, manager):
@@ -85,15 +137,10 @@ def test_patch_is_isolated_to_one_workspace(manager, origin_repo):
     second = manager.create(origin_repo.as_uri())
     first_tool = _tool(first, manager)
     first_tool.invoke(
-        {
-            "changes": [
-                {
-                    "path": "Main.java",
-                    "old_text": "public class Main {}",
-                    "new_text": "public class Main { int onlyFirst; }",
-                }
-            ]
-        }
+        _payload(
+            "Main.java",
+            ("public class Main {}", "public class Main { int onlyFirst; }"),
+        )
     )
     assert "onlyFirst" in (Path(first.repository_path) / "Main.java").read_text(
         encoding="utf-8"

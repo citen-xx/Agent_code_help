@@ -162,11 +162,15 @@ async def test_basic_profile_allows_patch_without_plan_or_auto_test(
             tool_call(
                 "apply_patch",
                 {
-                    "changes": [
+                    "files": [
                         {
                             "path": "Main.java",
-                            "old_text": "public class Main {}",
-                            "new_text": "public class Main { int fixed; }",
+                            "replacements": [
+                                {
+                                    "old_text": "public class Main {}",
+                                    "new_text": "public class Main { int fixed; }",
+                                }
+                            ],
                         }
                     ]
                 },
@@ -194,9 +198,18 @@ async def test_basic_profile_allows_patch_without_plan_or_auto_test(
     assert result.tool_events[0].repair_round == 0
     assert result.tool_events[0].target_file == "Main.java"
     assert result.tool_events[0].success is True
+    assert result.tool_events[0].invoked is True
     assert result.tool_events[0].patch_applied is True
     assert result.tool_events[0].error_category is None
     assert result.tool_events[0].output_chars > 0
+    assert result.tool_events[0].files_requested == 1
+    assert result.tool_events[0].replacements_requested == 1
+    assert result.tool_events[0].successful_replacements == 1
+    assert result.apply_patch_invocations == 1
+    assert result.patch_files_requested == 1
+    assert result.patch_replacements_requested == 1
+    assert result.successful_patch_replacements == 1
+    assert result.recovered_patch_failures == 0
     assert model.calls == 2
 
 

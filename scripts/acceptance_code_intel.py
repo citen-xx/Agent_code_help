@@ -92,11 +92,15 @@ def main() -> int:
             source_path = "src/main/java/example/Calculator.java"
             patch_tool.invoke(
                 {
-                    "changes": [
+                    "files": [
                         {
                             "path": source_path,
-                            "old_text": "public static int add(int left, int right) {",
-                            "new_text": "public static int add(int left, int right, int offset) {",
+                            "replacements": [
+                                {
+                                    "old_text": "public static int add(int left, int right) {",
+                                    "new_text": "public static int add(int left, int right, int offset) {",
+                                }
+                            ],
                         }
                     ]
                 }

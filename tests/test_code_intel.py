@@ -283,11 +283,15 @@ def test_patch_refreshes_only_affected_java_file(workspace, manager, monkeypatch
     }["apply_patch"]
     patch_tool.invoke(
         {
-            "changes": [
+            "files": [
                 {
                     "path": "src/main/java/com/example/OrderService.java",
-                    "old_text": "public void create()",
-                    "new_text": "public void placeOrder()",
+                    "replacements": [
+                        {
+                            "old_text": "public void create()",
+                            "new_text": "public void placeOrder()",
+                        }
+                    ],
                 }
             ]
         }

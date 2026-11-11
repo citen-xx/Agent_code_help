@@ -71,6 +71,13 @@ class AnalyzeResponse(BaseModel):
         description="Sanitized passive telemetry for each executed tool call.",
     )
     tool_output_chars: int = Field(default=0, ge=0)
+    apply_patch_invocations: int = Field(default=0, ge=0)
+    apply_patch_failures: int = Field(default=0, ge=0)
+    patch_files_requested: int = Field(default=0, ge=0)
+    patch_replacements_requested: int = Field(default=0, ge=0)
+    successful_patch_replacements: int = Field(default=0, ge=0)
+    failed_patch_replacement_indices: list[int] = Field(default_factory=list)
+    recovered_patch_failures: int = Field(default=0, ge=0)
     modified_files: list[str] = Field(
         default_factory=list,
         description="Files changed by the Agent in this run.",

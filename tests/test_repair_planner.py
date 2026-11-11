@@ -65,11 +65,15 @@ def _patch_call() -> AIMessage:
     return tool_call(
         "apply_patch",
         {
-            "changes": [
+            "files": [
                 {
                     "path": "Main.java",
-                    "old_text": "// step0",
-                    "new_text": "// step1",
+                    "replacements": [
+                        {
+                            "old_text": "// step0",
+                            "new_text": "// step1",
+                        }
+                    ],
                 }
             ]
         },

@@ -333,11 +333,15 @@ def test_patch_refreshes_call_graph(workspace, manager):
     }["apply_patch"]
     patch.invoke(
         {
-            "changes": [
+            "files": [
                 {
                     "path": "src/main/java/com/shop/PriceService.java",
-                    "old_text": "calculator.multiply(price, 2)",
-                    "new_text": "calculator.add(price, 2)",
+                    "replacements": [
+                        {
+                            "old_text": "calculator.multiply(price, 2)",
+                            "new_text": "calculator.add(price, 2)",
+                        }
+                    ],
                 }
             ]
         }

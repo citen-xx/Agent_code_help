@@ -12,6 +12,7 @@ from app.evaluation.phase2_5 import (
     regenerate_confirmation_artifacts,
     run_confirmation_experiment,
 )
+from app.evaluation.phase3 import run_patch_reliability_experiment
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -86,6 +87,14 @@ def _parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_RESULTS_DIR),
     )
     confirm_analyze.add_argument("--legacy-experiment")
+    patch_ab = subparsers.add_parser(
+        "patch-ablation",
+        help="Run Phase 3 v1/v2 apply_patch contract A/B",
+    )
+    patch_ab.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -130,6 +139,14 @@ def main(argv: list[str] | None = None) -> int:
             legacy_experiment=args.legacy_experiment,
         )
         print(f"Confirmation report: {report}")
+        return 0
+    if args.command == "patch-ablation":
+        report = asyncio.run(
+            run_patch_reliability_experiment(
+                output_dir=Path(args.output_dir),
+            )
+        )
+        print(f"Phase 3 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

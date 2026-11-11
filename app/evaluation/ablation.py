@@ -114,6 +114,26 @@ def _aggregate_variant(
         )
         for result in results
     )
+    patch_invocations = sum(
+        (
+            result.apply_patch_invocations
+            if "apply_patch_invocations" in result.model_fields_set
+            else result.tool_usage.get("apply_patch", 0)
+        )
+        for result in results
+    )
+    patch_files_requested = sum(
+        result.patch_files_requested for result in results
+    )
+    patch_replacements_requested = sum(
+        result.patch_replacements_requested for result in results
+    )
+    successful_patch_replacements = sum(
+        result.successful_patch_replacements for result in results
+    )
+    recovered_patch_failures = sum(
+        result.recovered_patch_failures for result in results
+    )
 
     task_results: dict[str, dict] = {}
     for task_id in sorted(task_groups):
@@ -253,6 +273,7 @@ def _aggregate_variant(
             "manual_test_runs": manual_test_runs,
             "agent_tool_calls": agent_tool_calls,
             "apply_patch_attempts": patch_attempts,
+            "apply_patch_invocations": patch_invocations,
             "apply_patch_failures": patch_failures,
             "apply_patch_failure_rate": _rate(
                 patch_failures,
@@ -261,6 +282,10 @@ def _aggregate_variant(
             "tool_output_chars": sum(
                 result.tool_output_chars for result in results
             ),
+            "patch_files_requested": patch_files_requested,
+            "patch_replacements_requested": patch_replacements_requested,
+            "successful_patch_replacements": successful_patch_replacements,
+            "recovered_patch_failures": recovered_patch_failures,
             "repair_activated_task_runs": sum(
                 1 for result in results if result.repair_rounds > 0
             ),

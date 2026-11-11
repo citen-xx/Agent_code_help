@@ -25,11 +25,15 @@ def _setup(workspace_root, origin_repo, monkeypatch):
 
 def _patch_change(step: int) -> dict:
     return {
-        "changes": [
+        "files": [
             {
                 "path": "Main.java",
-                "old_text": f"// step{step}",
-                "new_text": f"// step{step + 1}",
+                "replacements": [
+                    {
+                        "old_text": f"// step{step}",
+                        "new_text": f"// step{step + 1}",
+                    }
+                ],
             }
         ]
     }
@@ -129,6 +133,73 @@ def test_agent_patch_then_passing_test_returns_summary_diff(
     assert docker_command.count("--mount") == 1
     assert docker_command[-2:] == ["mvn", "test"]
     assert model.calls == 2  # plan + patch; passing test ends immediately
+
+
+def test_agent_recovers_from_structured_multi_replacement_failure(
+    workspace_root,
+    origin_repo,
+    monkeypatch,
+):
+    _, info, repo = _setup(workspace_root, origin_repo, monkeypatch)
+    patch_popen_sequence(
+        monkeypatch,
+        [{"stdout": "Tests run: 1, Failures: 0", "returncode": 0}],
+    )
+    invalid = _tool_calls_named(
+        "apply_patch",
+        {
+            "files": [
+                {
+                    "path": "Main.java",
+                    "replacements": [
+                        {
+                            "old_text": "// step0",
+                            "new_text": "// step1",
+                        },
+                        {
+                            "old_text": "missing marker",
+                            "new_text": "unused",
+                        },
+                    ],
+                }
+            ]
+        },
+        "invalid_multi_patch",
+    )
+    valid = _patch_only(0)
+    model = FakeChatModel(
+        script=[
+            _plan_call(),
+            invalid,
+            valid,
+            AIMessage(content="fixed"),
+        ]
+    )
+    monkeypatch.setattr("app.api.agent.build_chat_model", lambda: model)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/agent/analyze",
+            json={"task": "修复代码", "workspace_id": info.workspace_id},
+        )
+
+    body = response.json()
+    assert body["apply_patch_invocations"] == 2
+    assert body["apply_patch_failures"] == 1
+    assert body["patch_files_requested"] == 2
+    assert body["patch_replacements_requested"] == 3
+    assert body["successful_patch_replacements"] == 1
+    assert body["failed_patch_replacement_indices"] == [2]
+    assert body["recovered_patch_failures"] == 1
+    events = body["tool_events"]
+    patch_events = [event for event in events if event["tool_name"] == "apply_patch"]
+    assert patch_events[0]["success"] is False
+    assert patch_events[0]["error_category"] == "old_text_not_found"
+    assert patch_events[0]["failed_replacement_index"] == 2
+    assert patch_events[0]["patch_applied"] is False
+    assert patch_events[1]["success"] is True
+    assert "// step1" in (repo / "Main.java").read_text(encoding="utf-8")
+    assert model.calls == 3
 
 
 def test_agent_repairs_after_failure_and_receives_feedback(

@@ -518,6 +518,36 @@ evaluation/results/phase2_5_confirmation/
 被动工具遥测记录 sanitized error summary、目标文件、step、repair round、
 argument fingerprint、输出字符数和 patch 是否应用；不保存完整源码或 Patch 内容。
 
+### Transactional apply_patch
+
+默认 patch contract 按文件分组：
+
+```json
+{
+  "files": [
+    {
+      "path": "src/main/java/Example.java",
+      "replacements": [
+        {"old_text": "...", "new_text": "..."},
+        {"old_text": "...", "new_text": "..."}
+      ]
+    }
+  ]
+}
+```
+
+同一文件的 replacements 按顺序在内存 buffer 上执行。所有文件和 replacement
+验证成功后才 atomic commit；任一失败时整个 invocation 不落盘。错误返回
+`error_category`、`file`、`replacement_index` 和 `message`。
+
+运行 Phase 3 v1/v2 Contract A/B：
+
+```bash
+uv run python -m app.evaluation patch-ablation
+```
+
+结果写入 `evaluation/results/phase3_patch_reliability/`。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

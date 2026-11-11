@@ -105,7 +105,7 @@ async def test_single_task_success_and_report(tmp_path):
             answer="fixed",
             steps=3,
             tool_calls=5,
-            last_agent_action='apply_patch {"changes":[]}',
+            last_agent_action='apply_patch {"files":[]}',
             modified_files=["src/main/java/fixture/Calculator.java"],
             repair_rounds=1,
             diff="diff --git a/x b/x",
@@ -138,7 +138,7 @@ async def test_single_task_success_and_report(tmp_path):
     assert report.results[0].repair_rounds == 1
     assert report.results[0].llm_calls == 3
     assert report.results[0].tool_calls == 5
-    assert report.results[0].last_agent_action == 'apply_patch {"changes":[]}'
+    assert report.results[0].last_agent_action == 'apply_patch {"files":[]}'
     assert report.summary.average_llm_calls == 3.0
     assert report.summary.average_tokens == 120.0
     assert path.name == "report.json"
@@ -496,7 +496,7 @@ async def test_hidden_test_failure_prevents_success(tmp_path):
             AnalyzeResponse(
                 answer="hidden regression",
                 steps=2,
-                last_agent_action='apply_patch {"changes":[]}',
+                last_agent_action='apply_patch {"files":[]}',
             )
         ),
         run_id="hidden-fail",
@@ -513,7 +513,7 @@ async def test_hidden_test_failure_prevents_success(tmp_path):
         encoding="utf-8"
     )
     assert "Last Agent Action:" in markdown
-    assert 'apply_patch {"changes":[]}' in markdown
+    assert 'apply_patch {"files":[]}' in markdown
     analysis = generate_failure_analysis(
         report, tmp_path / "failure-analysis.md"
     )
@@ -579,7 +579,7 @@ def test_execution_metrics_count_tools_and_last_action():
             tool_calls=[
                 {
                     "name": "apply_patch",
-                    "args": {"changes": [{"path": "A.java"}]},
+                    "args": {"files": [{"path": "A.java"}]},
                     "id": "call-2",
                 }
             ],

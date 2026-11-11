@@ -104,21 +104,33 @@ def main() -> int:
 
             patch.invoke(
                 {
-                    "changes": [
+                    "files": [
                         {
                             "path": "src/main/java/example/Calculator.java",
-                            "old_text": "public int multiply(int left, int right) {",
-                            "new_text": "public int multiplyBy(int left, int right) {",
+                            "replacements": [
+                                {
+                                    "old_text": "public int multiply(int left, int right) {",
+                                    "new_text": "public int multiplyBy(int left, int right) {",
+                                }
+                            ],
                         },
                         {
                             "path": "src/main/java/example/PriceService.java",
-                            "old_text": "calculator.multiply(price, 2)",
-                            "new_text": "calculator.multiplyBy(price, 2)",
+                            "replacements": [
+                                {
+                                    "old_text": "calculator.multiply(price, 2)",
+                                    "new_text": "calculator.multiplyBy(price, 2)",
+                                }
+                            ],
                         },
                         {
                             "path": "src/test/java/example/CalculatorTest.java",
-                            "old_text": "calculator.multiply(2, 3)",
-                            "new_text": "calculator.multiplyBy(2, 3)",
+                            "replacements": [
+                                {
+                                    "old_text": "calculator.multiply(2, 3)",
+                                    "new_text": "calculator.multiplyBy(2, 3)",
+                                }
+                            ],
                         },
                     ]
                 }

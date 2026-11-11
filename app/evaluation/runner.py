@@ -359,6 +359,26 @@ class BenchmarkRunner:
             apply_patch_failure_rate=patch_failure_rate,
             tool_output_chars=tool_output_chars,
             tool_events=response_events,
+            apply_patch_invocations=(
+                response.apply_patch_invocations if response else 0
+            ),
+            patch_files_requested=(
+                response.patch_files_requested if response else 0
+            ),
+            patch_replacements_requested=(
+                response.patch_replacements_requested if response else 0
+            ),
+            successful_patch_replacements=(
+                response.successful_patch_replacements if response else 0
+            ),
+            failed_patch_replacement_indices=(
+                list(response.failed_patch_replacement_indices)
+                if response
+                else []
+            ),
+            recovered_patch_failures=(
+                response.recovered_patch_failures if response else 0
+            ),
             repair_rounds=response.repair_rounds if response else 0,
             plan_revisions=list(response.plan_revisions) if response else [],
             duration_seconds=round(time.monotonic() - started, 3),

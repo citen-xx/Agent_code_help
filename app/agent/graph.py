@@ -129,9 +129,9 @@ def _target_file(tool_name: str, arguments: dict) -> str | None:
     if tool_name == "apply_patch":
         paths = list(
             dict.fromkeys(
-                str(change.get("path"))
-                for change in arguments.get("changes", [])
-                if isinstance(change, dict) and change.get("path")
+                str(file_entry.get("path"))
+                for file_entry in arguments.get("files", [])
+                if isinstance(file_entry, dict) and file_entry.get("path")
             )
         )
         return ", ".join(paths[:5]) or None
@@ -142,16 +142,26 @@ def _target_file(tool_name: str, arguments: dict) -> str | None:
 
 
 def _classify_patch_error(content: str) -> PatchErrorCategory:
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        body = None
+    if isinstance(body, dict) and body.get("error_category"):
+        try:
+            return PatchErrorCategory(body["error_category"])
+        except ValueError:
+            pass
+    if (
+        "同一路径不能在一次 patch 中重复" in content
+        or "同一路径只能出现一次" in content
+        or "ApplyPatchRequest" in content
+        or "validation error" in content.lower()
+    ):
+        return PatchErrorCategory.INVALID_PATCH_FORMAT
     if "出现 0 次" in content:
         return PatchErrorCategory.OLD_TEXT_NOT_FOUND
     if "出现" in content and "次" in content:
         return PatchErrorCategory.OLD_TEXT_MULTIPLE_MATCHES
-    if (
-        "ApplyPatchRequest" in content
-        or "validation error" in content.lower()
-        or "同一路径不能在一次 patch 中重复" in content
-    ):
-        return PatchErrorCategory.INVALID_PATCH_FORMAT
     if "目标不是已存在" in content or "文件不存在" in content:
         return PatchErrorCategory.TARGET_FILE_NOT_FOUND
     if any(
@@ -160,7 +170,7 @@ def _classify_patch_error(content: str) -> PatchErrorCategory:
     ):
         return PatchErrorCategory.PATH_VALIDATION_FAILED
     if any(marker in content for marker in ("UTF-8", "二进制", "换行")):
-        return PatchErrorCategory.ENCODING_OR_NEWLINE_MISMATCH
+        return PatchErrorCategory.ENCODING_ERROR
     if any(marker in content.lower() for marker in ("permission", "权限", "workspace")):
         return PatchErrorCategory.PERMISSION_OR_WORKSPACE_ERROR
     if any(marker in content.lower() for marker in ("超时", "timeout", "timed out")):
@@ -183,6 +193,7 @@ def _tool_event(
     arguments: dict,
     content: str,
     success: bool,
+    invoked: bool,
     patch_applied: bool | None = None,
     auto_generated: bool = False,
 ) -> ToolEvent:
@@ -195,6 +206,25 @@ def _tool_event(
             else PatchErrorCategory.OTHER
         )
         summary = _error_summary(content)
+    files = arguments.get("files", [])
+    files_requested = len(files) if isinstance(files, list) else 0
+    replacements_requested = sum(
+        len(file_entry.get("replacements", []))
+        for file_entry in files
+        if isinstance(file_entry, dict)
+    )
+    successful_replacements = 0
+    failed_replacement_index = None
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        body = None
+    if isinstance(body, dict):
+        successful_replacements = int(body.get("successful_replacements") or 0)
+        index_value = body.get("replacement_index")
+        failed_replacement_index = int(index_value) if index_value else None
+        if not success and body.get("message"):
+            summary = str(body["message"])[:500]
     return ToolEvent(
         tool_call_index=index,
         step=step,
@@ -203,12 +233,17 @@ def _tool_event(
         call_id=call_id,
         target_file=_target_file(tool_name, arguments),
         success=success,
+        invoked=invoked,
         error_category=category,
         error_summary=summary,
         patch_applied=patch_applied,
         output_chars=len(content),
         argument_fingerprint=_argument_fingerprint(arguments),
         auto_generated=auto_generated,
+        files_requested=files_requested,
+        replacements_requested=replacements_requested,
+        successful_replacements=successful_replacements,
+        failed_replacement_index=failed_replacement_index,
     )
 
 
@@ -239,7 +274,14 @@ def _execution_metrics(
                 name, args = action
                 tool_usage[name] = tool_usage.get(name, 0) + 1
                 content = str(message.content)
-                if content.startswith(("[tool error]", "[planner required]")):
+                structured_failure = False
+                if content.lstrip().startswith("{"):
+                    try:
+                        structured_body = json.loads(content)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        structured_body = {}
+                    structured_failure = structured_body.get("success") is False
+                if content.startswith(("[tool error]", "[planner required]")) or structured_failure:
                     tool_failure_counts[name] = tool_failure_counts.get(name, 0) + 1
                 if name == "apply_patch" and content.lstrip().startswith("{"):
                     try:
@@ -263,6 +305,55 @@ def _execution_metrics(
         empty_patch_calls,
         auto_maven_test_runs,
     )
+
+
+def _patch_telemetry(events: list[ToolEvent]) -> dict:
+    patch_events = [
+        event for event in events if event.tool_name == "apply_patch"
+    ]
+    recovered = 0
+    for index, event in enumerate(patch_events):
+        if event.success:
+            continue
+        failed_targets = {
+            path.strip()
+            for path in (event.target_file or "").split(",")
+            if path.strip()
+        }
+        if any(
+            later.success
+            and failed_targets
+            & {
+                path.strip()
+                for path in (later.target_file or "").split(",")
+                if path.strip()
+            }
+            for later in patch_events[index + 1 :]
+        ):
+            recovered += 1
+    return {
+        "apply_patch_invocations": sum(
+            1 for event in patch_events if event.invoked
+        ),
+        "apply_patch_failures": sum(
+            1 for event in patch_events if not event.success
+        ),
+        "patch_files_requested": sum(
+            event.files_requested for event in patch_events
+        ),
+        "patch_replacements_requested": sum(
+            event.replacements_requested for event in patch_events
+        ),
+        "successful_patch_replacements": sum(
+            event.successful_replacements for event in patch_events
+        ),
+        "failed_patch_replacement_indices": [
+            event.failed_replacement_index
+            for event in patch_events
+            if not event.success and event.failed_replacement_index is not None
+        ],
+        "recovered_patch_failures": recovered,
+    }
 
 
 def build_agent_graph(
@@ -380,13 +471,19 @@ def build_agent_graph(
             if invocation_succeeded and name == "apply_patch":
                 try:
                     patch_body = json.loads(content)
-                    affected = patch_body.get("affected_files") or []
-                    modified_files.extend(str(path) for path in affected)
-                    patch_succeeded = True
-                    latest_patch_diff = str(patch_body.get("diff") or latest_patch_diff)
-                    if has_seen_test_failure:
-                        repair_rounds += 1
+                    if patch_body.get("success") is True:
+                        affected = patch_body.get("affected_files") or []
+                        modified_files.extend(str(path) for path in affected)
+                        patch_succeeded = True
+                        latest_patch_diff = str(
+                            patch_body.get("diff") or latest_patch_diff
+                        )
+                        if has_seen_test_failure:
+                            repair_rounds += 1
+                    else:
+                        invocation_succeeded = False
                 except (TypeError, ValueError, json.JSONDecodeError):
+                    invocation_succeeded = False
                     logger.warning("Could not parse apply_patch result: %s", content[:500])
             elif invocation_succeeded and name == "create_repair_plan":
                 try:
@@ -440,6 +537,13 @@ def build_agent_graph(
                         explicit_test_passed = True
                 except ValueError:
                     logger.warning("Could not parse run_tests result: %s", content[:500])
+            tool_invoked = (
+                name == "apply_patch"
+                and bool(content)
+                and not content.startswith(
+                    ("[tool error]", "[planner required]", "[auto test]")
+                )
+            ) or (name != "apply_patch" and invocation_succeeded)
             tool_messages.append(ToolMessage(content=content, tool_call_id=call_id))
             tool_events.append(
                 _tool_event(
@@ -455,10 +559,15 @@ def build_agent_graph(
                     arguments=args,
                     content=content,
                     success=invocation_succeeded,
+                    invoked=tool_invoked,
                     patch_applied=(
                         True
                         if name == "apply_patch" and invocation_succeeded
-                        else None
+                        else (
+                            False
+                            if name == "apply_patch" and tool_invoked
+                            else None
+                        )
                     ),
                 )
             )
@@ -509,6 +618,7 @@ def build_agent_graph(
                     success=bool(
                         latest_test is not None and latest_test.success
                     ),
+                    invoked=True,
                     auto_generated=True,
                 )
             )
@@ -672,6 +782,7 @@ async def run_agent(
         auto_maven_test_runs,
     ) = _execution_metrics(result.get("messages", []))
     tool_events = list(result.get("tool_events", []))
+    patch_metrics = _patch_telemetry(tool_events)
     latest_test = result.get("test_result")
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
@@ -740,6 +851,7 @@ async def run_agent(
         auto_maven_test_runs=auto_maven_test_runs,
         tool_events=tool_events,
         tool_output_chars=sum(event.output_chars for event in tool_events),
+        **patch_metrics,
         modified_files=modified_files,
         repair_rounds=result.get("repair_rounds", 0),
         test_result=latest_test,

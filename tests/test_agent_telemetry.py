@@ -22,7 +22,7 @@ from app.agent.telemetry import PatchErrorCategory
             PatchErrorCategory.INVALID_PATCH_FORMAT,
         ),
         (
-            "同一路径不能在一次 patch 中重复",
+            "同一路径只能出现一次，多个 replacement 必须放在同一 file entry",
             PatchErrorCategory.INVALID_PATCH_FORMAT,
         ),
         (
@@ -35,7 +35,7 @@ from app.agent.telemetry import PatchErrorCategory
         ),
         (
             "只允许修改 UTF-8 文本文件",
-            PatchErrorCategory.ENCODING_OR_NEWLINE_MISMATCH,
+            PatchErrorCategory.ENCODING_ERROR,
         ),
         (
             "Permission denied",

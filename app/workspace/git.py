@@ -91,6 +91,14 @@ def status_porcelain(repo: Path) -> str:
     return run_git(["status", "--porcelain=v1", "--branch"], cwd=repo)
 
 
+def worktree_is_dirty(repo: Path) -> bool:
+    """Return whether porcelain output contains any entry besides its branch header."""
+    return any(
+        line.strip() and not line.startswith("## ")
+        for line in status_porcelain(repo).splitlines()
+    )
+
+
 def diff(repo: Path) -> str:
     return run_git(["diff", "--no-ext-diff", "--no-textconv", "HEAD"], cwd=repo)
 

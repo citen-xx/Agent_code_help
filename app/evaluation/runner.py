@@ -73,7 +73,7 @@ class BenchmarkRunner:
         self.started_at = datetime.now(timezone.utc).isoformat()
         try:
             self.git_commit = git.head_commit(PROJECT_ROOT)
-            self.git_dirty = bool(git.status_porcelain(PROJECT_ROOT).strip())
+            self.git_dirty = git.worktree_is_dirty(PROJECT_ROOT)
         except git.GitError:
             self.git_commit = None
             self.git_dirty = None

@@ -36,6 +36,21 @@ def test_create_workspace_preserves_repository_line_endings(manager, origin_repo
     assert raw == b"public class Main {}\n"
 
 
+def test_worktree_dirty_ignores_branch_header(monkeypatch):
+    monkeypatch.setattr(
+        git,
+        "status_porcelain",
+        lambda _repo: "## main...origin/main [ahead 1]\n",
+    )
+    assert git.worktree_is_dirty(Path(".")) is False
+    monkeypatch.setattr(
+        git,
+        "status_porcelain",
+        lambda _repo: "## main\n M app.py\n",
+    )
+    assert git.worktree_is_dirty(Path(".")) is True
+
+
 def test_create_workspace_is_isolated(manager, origin_repo):
     first = manager.create(origin_repo.as_uri())
     second = manager.create(origin_repo.as_uri())

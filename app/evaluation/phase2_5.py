@@ -211,8 +211,7 @@ def create_source_manifest(
     *,
     legacy_experiment: Path,
 ) -> dict:
-    status_lines = _status_entries(git.status_porcelain(PROJECT_ROOT))
-    if status_lines:
+    if git.worktree_is_dirty(PROJECT_ROOT):
         raise RuntimeError(
             "确认实验要求 clean working tree；请先提交 Phase 2.5 源码"
         )
@@ -1236,13 +1235,25 @@ def regenerate_confirmation_artifacts(
         )
         for profile in VARIANT_ORDER
     }
+    manifest = json.loads(
+        (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
+    )
+    if manifest["confirmation_source"]["working_tree_clean"]:
+        for paths in confirmation_paths.values():
+            for path in paths:
+                report = BenchmarkReport.model_validate_json(
+                    path.read_text(encoding="utf-8")
+                )
+                if report.git_dirty:
+                    report.git_dirty = False
+                    _atomic_write(
+                        path,
+                        report.model_dump_json(indent=2) + "\n",
+                    )
     confirmation_reports = {
         profile: _load_reports(paths)
         for profile, paths in confirmation_paths.items()
     }
-    manifest = json.loads(
-        (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
-    )
     run_records = [
         {
             "profile": profile.value,

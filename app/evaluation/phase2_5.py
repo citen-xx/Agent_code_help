@@ -191,13 +191,21 @@ def _tool_contracts() -> dict[str, dict]:
     return contracts
 
 
+def _status_entries(status: str) -> list[str]:
+    return [
+        line
+        for line in status.splitlines()
+        if line.strip() and not line.startswith("## ")
+    ]
+
+
 def create_source_manifest(
     output_dir: Path,
     *,
     legacy_experiment: Path,
 ) -> dict:
-    status = git.status_porcelain(PROJECT_ROOT)
-    if status.strip():
+    status_lines = _status_entries(git.status_porcelain(PROJECT_ROOT))
+    if status_lines:
         raise RuntimeError(
             "确认实验要求 clean working tree；请先提交 Phase 2.5 源码"
         )

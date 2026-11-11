@@ -10,6 +10,7 @@ from app.evaluation.models import (
 )
 from app.evaluation.phase2_5 import (
     _patch_records,
+    _status_entries,
     _wilson_interval,
 )
 from app.evaluation.runner import BenchmarkRunner
@@ -78,6 +79,11 @@ def test_wilson_interval_is_bounded_and_narrows():
     assert small is not None and large is not None
     assert 0 <= small[0] < small[1] <= 1
     assert large[1] - large[0] < small[1] - small[0]
+
+
+def test_clean_tree_status_ignores_branch_header():
+    assert _status_entries("## main...origin/main [ahead 2]\n") == []
+    assert _status_entries("## main\n M app.py\n") == [" M app.py"]
 
 
 def test_patch_records_include_sequence_and_missing_history():

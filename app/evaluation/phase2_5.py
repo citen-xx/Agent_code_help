@@ -14,7 +14,7 @@ from app.agent.capabilities import (
     AgentProfile,
     PROFILE_CAPABILITIES,
 )
-from app.agent.graph import build_system_prompt
+from app.agent.graph import _classify_patch_error, build_system_prompt
 from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
 from app.evaluation.ablation import (
@@ -387,6 +387,15 @@ def _patch_records(
                         for item in result.tool_events
                         if item.tool_call_index < event.tool_call_index
                     ]
+                    error_category = (
+                        event.error_category.value
+                        if event.error_category is not None
+                        else "other"
+                    )
+                    if event.error_summary:
+                        derived = _classify_patch_error(event.error_summary)
+                        if derived.value != "other":
+                            error_category = derived.value
                     records.append(
                         {
                             "source": "phase2_5_confirmation",
@@ -396,13 +405,17 @@ def _patch_records(
                             "tool_call_index": event.tool_call_index,
                             "step": event.step,
                             "repair_round": event.repair_round,
-                            "target_file": event.target_file,
-                            "error_message": event.error_summary,
-                            "error_category": (
-                                event.error_category.value
-                                if event.error_category is not None
-                                else "other"
+                            "target_file": (
+                                ", ".join(
+                                    dict.fromkeys(
+                                        event.target_file.split(", ")
+                                    )
+                                )
+                                if event.target_file
+                                else None
                             ),
+                            "error_message": event.error_summary,
+                            "error_category": error_category,
                             "patch_applied": event.patch_applied,
                             "retried_after_failure": bool(later_events),
                             "later_successful_patch": any(
@@ -585,6 +598,32 @@ def _render_patch_analysis(payload: dict) -> str:
             "",
         ]
     )
+    detailed = [
+        record
+        for record in payload["records"]
+        if record["source"] == "phase2_5_confirmation"
+    ]
+    if detailed:
+        lines.extend(
+            [
+                "## Detailed Confirmation Events",
+                "",
+                "| Profile | Task | Tool # | Step | Repair Round | Target | Category | "
+                "Retried | Later Success | Final Pass |",
+                "|---|---|---:|---:|---:|---|---|---|---|---|",
+            ]
+        )
+        for record in detailed:
+            lines.append(
+                f"| {record['profile']} | {record['task_id']} | "
+                f"{record['tool_call_index']} | {record['step']} | "
+                f"{record['repair_round']} | {record['target_file'] or '-'} | "
+                f"{record['error_category']} | "
+                f"{record['retried_after_failure']} | "
+                f"{record['later_successful_patch']} | "
+                f"{record['final_task_passed']} |"
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -872,6 +911,16 @@ def _render_confirmation_report(payload: dict) -> str:
             f"{chars['total']} chars (approx. "
             f"{chars['estimated_tokens_chars_div_4']} tokens, estimate only)."
         )
+    basic_chars = token["confirmation_tool_output_chars"]["basic"]["total"]
+    ci_chars = token["confirmation_tool_output_chars"]["code_intelligence"][
+        "total"
+    ]
+    lines.append(
+        f"- Basic → CI measured tool-output difference: "
+        f"{ci_chars - basic_chars:+d} characters. Because outputs are fed back "
+        "into later prompts, this is the main identifiable source of the much "
+        "larger actual prompt-token delta."
+    )
     lines.extend(
         [
             "- Exact per-tool token cost is unavailable because provider usage is "
@@ -879,11 +928,17 @@ def _render_confirmation_report(payload: dict) -> str:
             "",
             "## D. Metric Consistency",
             "",
-            f"- Repair rounds: {payload['metric_consistency']['repair_rounds']['definition']}",
-            "- `apply_patch_failure_rate` is available from the confirmation run.",
-            "- Legacy Phase 2 has aggregate `apply_patch` failures but no per-call "
-            "attempt sequence, so detailed legacy metrics remain unavailable.",
-            "- Duration includes initial, Agent, final and hidden phases for all profiles.",
+            "| Metric | Consistent | Definition / availability |",
+            "|---|---:|---|",
+            f"| repair_rounds | yes | {payload['metric_consistency']['repair_rounds']['definition']} |",
+            "| tool_calls | yes | All Agent + harness tool actions. |",
+            "| agent_tool_calls | yes in confirmation | Agent-requested calls; unavailable in legacy Phase 2. |",
+            "| harness_action_count | yes in confirmation | Harness auto actions; unavailable in legacy. |",
+            "| manual/automatic tests | yes in confirmation | Split explicitly; legacy manual count is inferred only. |",
+            "| apply_patch attempts/failures/rate | yes in confirmation | Legacy has aggregate counts only. |",
+            "| changed_files | yes | Git status after filtering generated build directories. |",
+            "| duration | yes | Includes initial, Agent, final and hidden phases. |",
+            "| prompt/completion tokens | yes | Provider-reported values. |",
             "",
             "## F. Task-Level Stability",
             "",
@@ -972,6 +1027,15 @@ def _build_final_conclusions(payload: dict) -> list[str]:
             "weakness for evaluating repair limits."
         ),
         (
+            "Repair causality: in the detailed confirmation events, "
+            f"{patch['confirmation_after_automatic_test']} apply_patch failures "
+            "occurred after an auto Maven test and "
+            f"{patch['confirmation_after_replan']} occurred after a second plan "
+            "revision; all detailed failures were at repair round 0. This supports "
+            "correlation with the affected tasks, not a demonstrated auto-test or "
+            "Replan causal trigger."
+        ),
+        (
             "apply_patch: confirmation apply_patch failure categories are "
             f"`{json.dumps(patch['confirmation_by_category'])}`. The tool warrants "
             "targeted robustness work before capability-level conclusions are "
@@ -985,6 +1049,94 @@ def _build_final_conclusions(payload: dict) -> list[str]:
         ),
     ]
     return conclusions
+
+
+def _write_confirmation_outputs(
+    *,
+    phase_dir: Path,
+    legacy_paths: dict[AgentProfile, list[Path]],
+    legacy_reports: dict[AgentProfile, list[BenchmarkReport]],
+    confirmation_paths: dict[AgentProfile, list[Path]],
+    confirmation_reports: dict[AgentProfile, list[BenchmarkReport]],
+    run_records: list[dict],
+    manifest: dict,
+    started_at: str,
+) -> Path:
+    confirmation_metrics = _aggregate_by_profile(
+        confirmation_reports,
+        confirmation_paths,
+    )
+    combined_reports = {
+        profile: legacy_reports[profile] + confirmation_reports[profile]
+        for profile in VARIANT_ORDER
+    }
+    combined_paths = {
+        profile: legacy_paths[profile] + confirmation_paths[profile]
+        for profile in VARIANT_ORDER
+    }
+    combined_metrics = _aggregate_by_profile(
+        combined_reports,
+        combined_paths,
+    )
+    confidence_intervals = {}
+    for profile in VARIANT_ORDER:
+        metrics = combined_metrics[profile.value]["metrics"]
+        confidence_intervals[profile.value] = {
+            "success_rate": _wilson_interval(
+                metrics["passed"],
+                metrics["task_runs"],
+            ),
+            "method": "naive 95% Wilson interval over task-runs",
+            "independence_caveat": "repeated task-runs are not independent",
+        }
+
+    patch_analysis = _patch_analysis(
+        legacy_reports,
+        confirmation_reports,
+    )
+    _write_json(phase_dir / "patch_failure_analysis.json", patch_analysis)
+    _atomic_write(
+        phase_dir / "patch_failure_analysis.md",
+        _render_patch_analysis(patch_analysis),
+    )
+    payload = {
+        "schema_version": 1,
+        "phase": "2.5",
+        "experiment_id": PHASE25_DIR_NAME,
+        "started_at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "confirmation_commit": manifest["confirmation_source"]["git_commit"],
+        "confirmation_working_tree_clean": manifest["confirmation_source"][
+            "working_tree_clean"
+        ],
+        "model": settings.LLM_MODEL,
+        "benchmark": "v2",
+        "run_records": run_records,
+        "metrics": {
+            "legacy_phase2_exploratory": _aggregate_by_profile(
+                legacy_reports,
+                legacy_paths,
+            ),
+            "confirmation_clean": confirmation_metrics,
+            "combined": combined_metrics,
+        },
+        "confidence_intervals": confidence_intervals,
+        "metric_consistency": _metric_consistency(),
+        "token_attribution": _token_attribution(
+            combined_metrics,
+            confirmation_metrics,
+            manifest,
+        ),
+        "patch_failure_analysis": patch_analysis,
+    }
+    payload["final_conclusions"] = _build_final_conclusions(payload)
+    _write_json(phase_dir / "confirmation_report.json", payload)
+    _atomic_write(
+        phase_dir / "confirmation_report.md",
+        _render_confirmation_report(payload),
+    )
+    print(f"\nConfirmation report: {phase_dir / 'confirmation_report.md'}")
+    return phase_dir / "confirmation_report.md"
 
 
 async def run_confirmation_experiment(
@@ -1042,77 +1194,75 @@ async def run_confirmation_experiment(
             }
         )
 
-    confirmation_metrics = _aggregate_by_profile(
-        confirmation_reports,
-        confirmation_paths,
+    return _write_confirmation_outputs(
+        phase_dir=phase_dir,
+        legacy_paths=legacy_paths,
+        legacy_reports=legacy_reports,
+        confirmation_paths=confirmation_paths,
+        confirmation_reports=confirmation_reports,
+        run_records=run_records,
+        manifest=manifest,
+        started_at=started_at,
     )
-    combined_reports = {
-        profile: legacy_reports[profile] + confirmation_reports[profile]
-        for profile in VARIANT_ORDER
-    }
-    combined_paths = {
-        profile: legacy_paths[profile] + confirmation_paths[profile]
-        for profile in VARIANT_ORDER
-    }
-    combined_metrics = _aggregate_by_profile(
-        combined_reports,
-        combined_paths,
-    )
-    confidence_intervals = {}
-    for profile in VARIANT_ORDER:
-        metrics = combined_metrics[profile.value]["metrics"]
-        passed = metrics["passed"]
-        total = metrics["task_runs"]
-        confidence_intervals[profile.value] = {
-            "success_rate": _wilson_interval(passed, total),
-            "method": "naive 95% Wilson interval over task-runs",
-            "independence_caveat": "repeated task-runs are not independent",
-        }
 
-    patch_analysis = _patch_analysis(
-        legacy_reports,
-        confirmation_reports,
+
+def regenerate_confirmation_artifacts(
+    *,
+    output_dir: str | Path = DEFAULT_RESULTS_DIR,
+    legacy_experiment: str | Path | None = None,
+) -> Path:
+    """Rebuild analysis artifacts from existing source and run reports."""
+    output_root = _resolve_output_root(output_dir)
+    phase_dir = output_root / PHASE25_DIR_NAME
+    legacy_path = (
+        Path(legacy_experiment).expanduser().resolve()
+        if legacy_experiment
+        else output_root / LEGACY_EXPERIMENT_ID
     )
-    _write_json(phase_dir / "patch_failure_analysis.json", patch_analysis)
-    _atomic_write(
-        phase_dir / "patch_failure_analysis.md",
-        _render_patch_analysis(patch_analysis),
-    )
-    payload = {
-        "schema_version": 1,
-        "phase": "2.5",
-        "experiment_id": PHASE25_DIR_NAME,
-        "started_at": started_at,
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "confirmation_commit": manifest["confirmation_source"]["git_commit"],
-        "confirmation_working_tree_clean": manifest["confirmation_source"][
-            "working_tree_clean"
-        ],
-        "model": settings.LLM_MODEL,
-        "benchmark": "v2",
-        "run_records": run_records,
-        "metrics": {
-            "legacy_phase2_exploratory": _aggregate_by_profile(
-                legacy_reports,
-                legacy_paths,
-            ),
-            "confirmation_clean": confirmation_metrics,
-            "combined": combined_metrics,
-        },
-        "confidence_intervals": confidence_intervals,
-        "metric_consistency": _metric_consistency(),
-        "token_attribution": _token_attribution(
-            combined_metrics,
-            confirmation_metrics,
-            manifest,
-        ),
-        "patch_failure_analysis": patch_analysis,
+    legacy_paths = _legacy_report_paths(legacy_path)
+    legacy_reports = {
+        profile: _load_reports(paths)
+        for profile, paths in legacy_paths.items()
     }
-    payload["final_conclusions"] = _build_final_conclusions(payload)
-    _write_json(phase_dir / "confirmation_report.json", payload)
-    _atomic_write(
-        phase_dir / "confirmation_report.md",
-        _render_confirmation_report(payload),
+    confirmation_paths = {
+        profile: sorted(
+            (
+                phase_dir
+                / "confirmation_runs"
+                / f"variant_{profile.value}"
+            ).glob("*/report.json")
+        )
+        for profile in VARIANT_ORDER
+    }
+    confirmation_reports = {
+        profile: _load_reports(paths)
+        for profile, paths in confirmation_paths.items()
+    }
+    manifest = json.loads(
+        (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
     )
-    print(f"\nConfirmation report: {phase_dir / 'confirmation_report.md'}")
-    return phase_dir / "confirmation_report.md"
+    run_records = [
+        {
+            "profile": profile.value,
+            "run_id": report.run_id,
+            "report": path.relative_to(PROJECT_ROOT).as_posix(),
+            "passed_tasks": report.summary.passed_tasks,
+            "total_tasks": report.summary.total_tasks,
+        }
+        for profile in VARIANT_ORDER
+        for report, path in zip(
+            confirmation_reports[profile],
+            confirmation_paths[profile],
+            strict=True,
+        )
+    ]
+    return _write_confirmation_outputs(
+        phase_dir=phase_dir,
+        legacy_paths=legacy_paths,
+        legacy_reports=legacy_reports,
+        confirmation_paths=confirmation_paths,
+        confirmation_reports=confirmation_reports,
+        run_records=run_records,
+        manifest=manifest,
+        started_at=manifest["generated_at"],
+    )

@@ -8,7 +8,10 @@ from app.agent.capabilities import AgentProfile
 from app.evaluation.ablation import run_ablation_experiment
 from app.evaluation.failure_analysis import generate_failure_analysis
 from app.evaluation.models import BenchmarkReport
-from app.evaluation.phase2_5 import run_confirmation_experiment
+from app.evaluation.phase2_5 import (
+    regenerate_confirmation_artifacts,
+    run_confirmation_experiment,
+)
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -74,6 +77,15 @@ def _parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_RESULTS_DIR),
     )
     confirm.add_argument("--legacy-experiment")
+    confirm_analyze = subparsers.add_parser(
+        "confirm-analyze",
+        help="Regenerate Phase 2.5 reports from existing run artifacts",
+    )
+    confirm_analyze.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    confirm_analyze.add_argument("--legacy-experiment")
     return parser
 
 
@@ -109,6 +121,13 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=Path(args.output_dir),
                 legacy_experiment=args.legacy_experiment,
             )
+        )
+        print(f"Confirmation report: {report}")
+        return 0
+    if args.command == "confirm-analyze":
+        report = regenerate_confirmation_artifacts(
+            output_dir=Path(args.output_dir),
+            legacy_experiment=args.legacy_experiment,
         )
         print(f"Confirmation report: {report}")
         return 0

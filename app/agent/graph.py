@@ -127,11 +127,13 @@ def _argument_fingerprint(arguments: dict) -> str:
 
 def _target_file(tool_name: str, arguments: dict) -> str | None:
     if tool_name == "apply_patch":
-        paths = [
-            str(change.get("path"))
-            for change in arguments.get("changes", [])
-            if isinstance(change, dict) and change.get("path")
-        ]
+        paths = list(
+            dict.fromkeys(
+                str(change.get("path"))
+                for change in arguments.get("changes", [])
+                if isinstance(change, dict) and change.get("path")
+            )
+        )
         return ", ".join(paths[:5]) or None
     for key in ("path", "file_path"):
         if arguments.get(key):
@@ -144,7 +146,11 @@ def _classify_patch_error(content: str) -> PatchErrorCategory:
         return PatchErrorCategory.OLD_TEXT_NOT_FOUND
     if "出现" in content and "次" in content:
         return PatchErrorCategory.OLD_TEXT_MULTIPLE_MATCHES
-    if "ApplyPatchRequest" in content or "validation error" in content.lower():
+    if (
+        "ApplyPatchRequest" in content
+        or "validation error" in content.lower()
+        or "同一路径不能在一次 patch 中重复" in content
+    ):
         return PatchErrorCategory.INVALID_PATCH_FORMAT
     if "目标不是已存在" in content or "文件不存在" in content:
         return PatchErrorCategory.TARGET_FILE_NOT_FOUND

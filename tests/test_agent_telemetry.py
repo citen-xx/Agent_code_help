@@ -22,6 +22,10 @@ from app.agent.telemetry import PatchErrorCategory
             PatchErrorCategory.INVALID_PATCH_FORMAT,
         ),
         (
+            "同一路径不能在一次 patch 中重复",
+            PatchErrorCategory.INVALID_PATCH_FORMAT,
+        ),
+        (
             "patch 目标不是已存在的普通文件",
             PatchErrorCategory.TARGET_FILE_NOT_FOUND,
         ),

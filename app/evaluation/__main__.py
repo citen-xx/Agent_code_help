@@ -22,6 +22,7 @@ from app.evaluation.phase4 import (
 )
 from app.evaluation.phase4_5 import (
     regenerate_lifecycle_report,
+    regenerate_lifecycle_audit,
     run_lifecycle_controls,
     run_lifecycle_treatment,
 )
@@ -147,6 +148,14 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    lifecycle_audit = subparsers.add_parser(
+        "lifecycle-audit",
+        help="Regenerate Phase 4.5 audit from existing Control runs",
+    )
+    lifecycle_audit.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     lifecycle_report = subparsers.add_parser(
         "lifecycle-report",
         help="Regenerate Phase 4.5 report from existing artifacts",
@@ -243,6 +252,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         print(f"Phase 4.5 report: {report}")
+        return 0
+    if args.command == "lifecycle-audit":
+        report = regenerate_lifecycle_audit(
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 4.5 audit: {report}")
         return 0
     if args.command == "lifecycle-report":
         report = regenerate_lifecycle_report(

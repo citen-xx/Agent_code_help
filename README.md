@@ -573,6 +573,13 @@ Phase 4.5 records every LLM call's provider usage together with exact
 message-history character categories and message retention exposure. Provider
 tokens remain authoritative; category token counts are not inferred.
 
+Treatment history is derived deterministically for each LLM call without
+mutating persistent Agent state:
+
+- keep the latest six successful exploration results;
+- keep the latest test result and compact older results to failure metadata;
+- keep the active Repair Plan and compact superseded plan duplication.
+
 ```bash
 uv run python -m app.evaluation lifecycle-control
 uv run python -m app.evaluation lifecycle-treatment

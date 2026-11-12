@@ -121,6 +121,36 @@ class UsageTracker:
             ],
         )
 
+    def capture_raw_test_outputs(
+        self,
+        messages: list,
+        *,
+        call_index: int,
+    ) -> None:
+        calls_by_id = {}
+        for message in messages:
+            if not isinstance(message, AIMessage):
+                continue
+            for call in message.tool_calls:
+                call_id = str(call.get("id") or "")
+                if call_id:
+                    calls_by_id[call_id] = str(call.get("name") or "unknown")
+        for message in messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            if calls_by_id.get(str(message.tool_call_id)) != "run_tests":
+                continue
+            if id(message) in self.raw_test_keys:
+                continue
+            self.raw_test_keys.add(id(message))
+            self.raw_test_outputs.append(
+                RawToolOutputTelemetry(
+                    call_index=call_index,
+                    tool_name="run_tests",
+                    content=str(message.content),
+                )
+            )
+
     def record_call(
         self,
         messages: list,
@@ -285,10 +315,16 @@ class UsageTrackingChatModel(BaseChatModel):
         *,
         repair_round: int,
         profile: str | None = None,
+        raw_messages: list | None = None,
     ) -> None:
         self.tracker.set_repair_round(repair_round)
         if profile is not None:
             self.tracker.profile = profile
+        if raw_messages is not None:
+            self.tracker.capture_raw_test_outputs(
+                raw_messages,
+                call_index=self.tracker.llm_calls + 1,
+            )
 
     def _generate(
         self,

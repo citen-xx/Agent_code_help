@@ -57,6 +57,7 @@ CI_TOOL_NAMES = {
 }
 SOURCE_FILES = [
     "app/agent/capabilities.py",
+    "app/agent/context_lifecycle.py",
     "app/agent/graph.py",
     "app/agent/state.py",
     "app/agent/telemetry.py",
@@ -329,8 +330,12 @@ def _context_summary(reports: list[BenchmarkReport]) -> dict:
         "category_exposure": dict(exposure_by_category),
         "category_raw": dict(raw_by_category),
         "category_avg_retained_calls": {
-            category: _mean(values)
-            for category, values in retained_by_category.items()
+            category: (
+                exposure_by_category[category] / raw_by_category[category]
+                if raw_by_category[category]
+                else 0.0
+            )
+            for category in retained_by_category
         },
         "raw_test_output_chars": sum(
             len(output.content)
@@ -511,10 +516,17 @@ def _risk_classification(comparison: dict) -> dict:
     return result
 
 
-def _step_pressure(reports: list[BenchmarkReport]) -> dict:
+def _step_pressure(
+    reports: dict[AgentProfile, list[BenchmarkReport]],
+) -> dict:
+    flat_reports = [
+        report
+        for profile_reports in reports.values()
+        for report in profile_reports
+    ]
     rows = [
         result
-        for report in reports
+        for report in flat_reports
         for result in report.results
     ]
     return {
@@ -733,7 +745,7 @@ def render_lifecycle_audit(control: dict) -> str:
         for category in CATEGORY_FIELDS:
             lines.append(
                 f"| {profile.value} | `{category}` | "
-                f"{values['category_totals'].get(category, 0)} | "
+                f"{values['category_raw'].get(category, 0)} | "
                 f"{values['category_exposure'].get(category, 0)} | "
                 f"{values['category_avg_retained_calls'].get(category) or 0:.2f} |"
             )
@@ -833,6 +845,15 @@ def render_lifecycle_audit(control: dict) -> str:
             "test-result char-exposures and "
             f"{full['category_exposure']['patch_output_chars']} patch-result "
             "char-exposures.",
+            "- Selected optimization 1: compact older successful exploration "
+            "results while retaining the latest six.",
+            "- Selected optimization 2: retain the latest test result and compact "
+            "older test results to deterministic failure metadata.",
+            "- Selected optimization 3: retain the active plan and compact "
+            "superseded plan results and their duplicated tool-call arguments.",
+            "- Patch success is not selected because its measured exposure is only "
+            "15,240 chars for Full and 99,231 chars for Planner, which is much "
+            "smaller than CI/source/test lifecycle cost.",
             "- The user task, current repair outcome, latest relevant failure, "
             "latest source-read locations, and active plan semantics must remain.",
             "- No history is removed merely for age; compaction is selected by "
@@ -861,6 +882,22 @@ invented; categories remain exact characters.
 - Working: current CI locations, source reads, current test result.
 - Ephemeral: old successful patch acknowledgement, obsolete test stdout,
   previous plan revisions, and superseded metadata.
+
+## Treatment Contract
+
+The model receives a derived history; persistent Agent state and execution
+telemetry retain the original messages.
+
+- Keep the latest six successful exploration results. Older CI, source,
+  search, file-list, and Git-read results are replaced with deterministic
+  compact markers.
+- Keep the latest Maven result verbatim. Older results keep status, exit code,
+  failed tests, relevant failure lines, duration, and original size.
+- Keep the active repair plan and its latest tool-call arguments. Superseded
+  plan results and duplicated older plan arguments are compacted.
+
+Patch output is not compacted in this treatment because measured exposure was
+small relative to exploration, test, and plan history.
 
 ## Safety
 
@@ -1015,6 +1052,44 @@ def render_lifecycle_report(payload: dict) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def regenerate_lifecycle_audit(
+    *,
+    output_dir: str | Path = DEFAULT_RESULTS_DIR,
+) -> Path:
+    phase_dir = _phase_dir(output_dir)
+    paths = _control_paths(phase_dir)
+    reports = {
+        profile: _load_reports(profile_paths)
+        for profile, profile_paths in paths.items()
+    }
+    control = {
+        "metrics": _metrics(reports, paths),
+        "context": {
+            profile.value: _context_summary(reports[profile])
+            for profile in PROFILES
+        },
+        "growth_curve": _growth_curve(
+            [
+                report
+                for profile_reports in reports.values()
+                for report in profile_reports
+            ]
+        ),
+        "task_rows": {
+            profile.value: _task_context_rows(reports[profile])
+            for profile in PROFILES
+        },
+        "step_pressure": _step_pressure(reports),
+    }
+    audit = phase_dir / "context_lifecycle_audit.md"
+    _write(audit, render_lifecycle_audit(control))
+    _write(
+        phase_dir / "context_lifecycle_design.md",
+        render_lifecycle_design(),
+    )
+    return audit
 
 
 async def run_lifecycle_controls(

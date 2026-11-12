@@ -43,6 +43,7 @@ from app.agent.capabilities import (
     capabilities_for,
     resolve_profile,
 )
+from app.agent.context_lifecycle import compact_model_messages
 from app.agent.state import AgentState
 from app.agent.telemetry import PatchErrorCategory, ToolEvent
 from app.code_intel.tools import create_code_intel_tools
@@ -505,8 +506,11 @@ def build_agent_graph(
                 set_context_metadata(
                     repair_round=state.get("repair_rounds", 0),
                     profile=profile.value,
+                    raw_messages=state["messages"],
                 )
-            response = llm.invoke(state["messages"])
+            response = llm.invoke(
+                compact_model_messages(state["messages"])
+            )
         except Exception as exc:
             logger.exception("LLM call failed (step %d)", state["step_count"] + 1)
             return {

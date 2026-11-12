@@ -54,9 +54,62 @@ class LLMUsage(BaseModel):
     estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
+class ContextCallTelemetry(BaseModel):
+    """Per-LLM-call provider usage and exact message-history chars."""
+
+    call_index: int = Field(ge=1)
+    task_id: str
+    profile: str
+    repair_round: int = Field(default=0, ge=0)
+    message_count: int = Field(default=0, ge=0)
+    provider_prompt_tokens: int | None = Field(default=None, ge=0)
+    provider_completion_tokens: int | None = Field(default=None, ge=0)
+    provider_total_tokens: int | None = Field(default=None, ge=0)
+    system_message_chars: int = Field(default=0, ge=0)
+    user_message_chars: int = Field(default=0, ge=0)
+    assistant_message_chars: int = Field(default=0, ge=0)
+    tool_message_chars: int = Field(default=0, ge=0)
+    tool_call_chars: int = Field(default=0, ge=0)
+    ci_tool_chars: int = Field(default=0, ge=0)
+    read_file_chars: int = Field(default=0, ge=0)
+    test_output_chars: int = Field(default=0, ge=0)
+    patch_output_chars: int = Field(default=0, ge=0)
+    planner_chars: int = Field(default=0, ge=0)
+    other_chars: int = Field(default=0, ge=0)
+    tool_schema_chars: int = Field(default=0, ge=0)
+    total_history_chars: int = Field(default=0, ge=0)
+
+
+class MessageLifecycleTelemetry(BaseModel):
+    """Raw chars and cumulative exposure for one history message."""
+
+    message_key: str
+    role: str
+    source: str
+    raw_chars: int = Field(ge=0)
+    introduced_call_index: int = Field(ge=1)
+    retained_call_count: int = Field(default=0, ge=0)
+    context_exposure_chars: int = Field(default=0, ge=0)
+
+
+class RawToolOutputTelemetry(BaseModel):
+    """Raw test output retained in the evaluation trace, not model context."""
+
+    call_index: int = Field(ge=1)
+    tool_name: str
+    content: str
+
+
+class ContextTelemetry(BaseModel):
+    calls: list[ContextCallTelemetry] = Field(default_factory=list)
+    messages: list[MessageLifecycleTelemetry] = Field(default_factory=list)
+    raw_test_outputs: list[RawToolOutputTelemetry] = Field(default_factory=list)
+
+
 class AgentRunOutput(BaseModel):
     response: AnalyzeResponse
     usage: LLMUsage = Field(default_factory=LLMUsage)
+    context_telemetry: ContextTelemetry = Field(default_factory=ContextTelemetry)
 
 
 class BenchmarkTaskResult(BaseModel):
@@ -118,6 +171,7 @@ class BenchmarkTaskResult(BaseModel):
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
+    context_telemetry: ContextTelemetry = Field(default_factory=ContextTelemetry)
 
 
 class BenchmarkSummary(BaseModel):

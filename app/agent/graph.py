@@ -478,6 +478,7 @@ def build_agent_graph(
     tools: list[BaseTool],
     max_steps: int = DEFAULT_MAX_STEPS,
     capabilities: AgentCapabilities = FULL_CAPABILITIES,
+    profile: AgentProfile = DEFAULT_AGENT_PROFILE,
 ):
     """Build the compiled agent graph: LLM <-> tools until a final answer."""
     tools_by_name = {tool.name: tool for tool in tools}
@@ -495,6 +496,16 @@ def build_agent_graph(
             }
         try:
             llm = model.bind_tools(tools) if tools else model
+            set_context_metadata = getattr(
+                llm,
+                "set_context_metadata",
+                None,
+            )
+            if callable(set_context_metadata):
+                set_context_metadata(
+                    repair_round=state.get("repair_rounds", 0),
+                    profile=profile.value,
+                )
             response = llm.invoke(state["messages"])
         except Exception as exc:
             logger.exception("LLM call failed (step %d)", state["step_count"] + 1)
@@ -851,6 +862,7 @@ async def run_agent(
         tools,
         max_steps=max_steps,
         capabilities=capabilities,
+        profile=resolved_profile,
     )
 
     initial_state: AgentState = {

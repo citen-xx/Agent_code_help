@@ -567,6 +567,20 @@ uv run python -m app.evaluation context-ab
 
 结果写入 `evaluation/results/phase4_context_engineering/`。
 
+### Context Lifecycle & Token Accounting
+
+Phase 4.5 records every LLM call's provider usage together with exact
+message-history character categories and message retention exposure. Provider
+tokens remain authoritative; category token counts are not inferred.
+
+```bash
+uv run python -m app.evaluation lifecycle-control
+uv run python -m app.evaluation lifecycle-treatment
+uv run python -m app.evaluation lifecycle-report
+```
+
+结果写入 `evaluation/results/phase4_5_context_lifecycle/`。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

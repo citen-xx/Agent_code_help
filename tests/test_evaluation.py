@@ -405,6 +405,10 @@ def test_usage_tracking_chat_model():
     assert usage.completion_tokens == 7
     assert usage.total_tokens == 37
     assert usage.estimated_cost_usd is None
+    context = tracker.snapshot_context()
+    assert context.calls[0].provider_prompt_tokens == 30
+    assert context.calls[0].user_message_chars == len("hello")
+    assert context.messages[0].retained_call_count == 1
 
 
 def test_builtin_task_catalog_and_bundles():

@@ -25,6 +25,7 @@ from app.evaluation.models import (
     BenchmarkSummary,
     BenchmarkTask,
     BenchmarkTaskResult,
+    ContextTelemetry,
     FailureCategory,
     LLMUsage,
 )
@@ -85,7 +86,10 @@ class BenchmarkRunner:
         workspace_id: str,
         manager: WorkspaceManager,
     ) -> AgentRunOutput:
-        tracker = UsageTracker()
+        tracker = UsageTracker(
+            task_id=task.task_id,
+            profile=self.profile.value,
+        )
         model = UsageTrackingChatModel(
             delegate=build_chat_model(),
             tracker=tracker,
@@ -99,7 +103,11 @@ class BenchmarkRunner:
             workspace_manager=manager,
             profile=self.profile,
         )
-        return AgentRunOutput(response=response, usage=tracker.snapshot())
+        return AgentRunOutput(
+            response=response,
+            usage=tracker.snapshot(),
+            context_telemetry=tracker.snapshot_context(),
+        )
 
     def _repository_path(self, task: BenchmarkTask) -> Path:
         path = Path(task.repository)
@@ -267,6 +275,7 @@ class BenchmarkRunner:
         usage: LLMUsage,
         category: FailureCategory | None,
         reason: str | None,
+        context_telemetry: ContextTelemetry | None = None,
         final_diff: str = "",
         hidden_test=None,
         changed_files: list[str] | None = None,
@@ -408,6 +417,7 @@ class BenchmarkRunner:
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
             estimated_cost_usd=usage.estimated_cost_usd,
+            context_telemetry=context_telemetry or ContextTelemetry(),
         )
 
     def _failure_result(
@@ -485,6 +495,7 @@ class BenchmarkRunner:
         hidden_test = None
         response: AnalyzeResponse | None = None
         usage = LLMUsage()
+        context_telemetry = ContextTelemetry()
         category: FailureCategory | None = None
         reason: str | None = None
         final_diff = ""
@@ -579,6 +590,7 @@ class BenchmarkRunner:
                 )
                 response = agent_output.response
                 usage = agent_output.usage
+                context_telemetry = agent_output.context_telemetry
                 agent_failure = self._agent_reported_failure(response)
                 if agent_failure:
                     category, reason = agent_failure
@@ -659,6 +671,7 @@ class BenchmarkRunner:
                 reason=reason,
                 final_diff=final_diff,
                 changed_files=changed_files,
+                context_telemetry=context_telemetry,
             )
         except Exception as exc:
             logger.exception("Benchmark task infrastructure failure: %s", task.task_id)

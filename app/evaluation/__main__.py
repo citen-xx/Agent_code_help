@@ -20,6 +20,11 @@ from app.evaluation.phase4 import (
     regenerate_phase4_report,
     run_context_ab,
 )
+from app.evaluation.phase4_5 import (
+    regenerate_lifecycle_report,
+    run_lifecycle_controls,
+    run_lifecycle_treatment,
+)
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -126,6 +131,30 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    lifecycle_control = subparsers.add_parser(
+        "lifecycle-control",
+        help="Run Phase 4.5 context-lifecycle Control and audit",
+    )
+    lifecycle_control.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    lifecycle_treatment = subparsers.add_parser(
+        "lifecycle-treatment",
+        help="Run Phase 4.5 context-lifecycle Treatment and report",
+    )
+    lifecycle_treatment.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    lifecycle_report = subparsers.add_parser(
+        "lifecycle-report",
+        help="Regenerate Phase 4.5 report from existing artifacts",
+    )
+    lifecycle_report.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -198,6 +227,28 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(f"Phase 4 report: {report}")
+        return 0
+    if args.command == "lifecycle-control":
+        report = asyncio.run(
+            run_lifecycle_controls(
+                output_dir=Path(args.output_dir),
+            )
+        )
+        print(f"Phase 4.5 audit: {report}")
+        return 0
+    if args.command == "lifecycle-treatment":
+        report = asyncio.run(
+            run_lifecycle_treatment(
+                output_dir=Path(args.output_dir),
+            )
+        )
+        print(f"Phase 4.5 report: {report}")
+        return 0
+    if args.command == "lifecycle-report":
+        report = regenerate_lifecycle_report(
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 4.5 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

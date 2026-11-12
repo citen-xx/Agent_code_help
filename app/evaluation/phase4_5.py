@@ -1175,11 +1175,27 @@ async def run_lifecycle_treatment(
     previous_manifest = json.loads(
         (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
     )
-    manifest = _manifest(
-        control_paths=control_paths,
-        control_commit=next(iter(control_commits)),
-        control_snapshot=previous_manifest.get("control"),
+    existing_treatment = any(
+        _completed_paths(
+            phase_dir / "treatment_runs" / f"variant_{profile.value}"
+        )
+        for profile in PROFILES
     )
+    if existing_treatment:
+        manifest = previous_manifest
+        manifest["control"]["paths"] = {
+            profile.value: [
+                path.relative_to(PROJECT_ROOT).as_posix()
+                for path in paths
+            ]
+            for profile, paths in control_paths.items()
+        }
+    else:
+        manifest = _manifest(
+            control_paths=control_paths,
+            control_commit=next(iter(control_commits)),
+            control_snapshot=previous_manifest.get("control"),
+        )
     _write_json(phase_dir / "source_manifest.json", manifest)
     treatment_paths, treatment_reports = await _run_profile_set(
         phase_dir=phase_dir,

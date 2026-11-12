@@ -8,10 +8,12 @@ from app.evaluation.models import (
     BenchmarkTaskResult,
 )
 from app.evaluation.phase4 import (
+    CI_TOOLS,
     _ci_stats,
     _risk_classification,
     render_context_audit,
     render_context_contract,
+    render_phase4_report,
 )
 from app.evaluation.runner import BenchmarkRunner
 
@@ -109,14 +111,120 @@ def test_context_audit_and_design_are_progressive():
 def test_risk_classification_detects_tool_substitution():
     comparison = {
         "code_intelligence": {
+            "average_tokens": {"control": 1000, "treatment": 900, "delta": -100},
+            "success_rate": {"control": 0.8, "treatment": 0.8, "delta": 0},
+        },
+        "planner": {
             "average_tokens": {"control": 1000, "treatment": 990, "delta": -10},
             "success_rate": {"control": 0.8, "treatment": 0.8, "delta": 0},
+        },
+    }
+    control_context = {
+        "code_intelligence": {
+            "read_file_calls": 2,
+            "total_ci_output_chars": 1000,
+        },
+        "planner": {
+            "read_file_calls": 2,
+            "total_ci_output_chars": 1000,
+        },
+    }
+    treatment_context = {
+        "code_intelligence": {
+            "read_file_calls": 2,
+            "total_ci_output_chars": 400,
+        },
+        "planner": {
+            "read_file_calls": 10,
+            "total_ci_output_chars": 400,
+        },
+    }
+    risk = _risk_classification(
+        comparison,
+        control_context,
+        treatment_context,
+    )
+    assert risk["code_intelligence"]["classification"] == "efficient_win"
+    assert risk["planner"]["classification"] == "possible_tool_substitution"
+
+
+def test_report_uses_measured_deltas_in_conclusion():
+    comparison_keys = (
+        "success_rate",
+        "hard_success_rate",
+        "hidden_test_pass_rate",
+        "average_prompt_tokens",
+        "average_completion_tokens",
+        "average_tokens",
+        "average_llm_calls",
+        "average_agent_tool_calls",
+        "average_duration",
+    )
+    profiles = ("code_intelligence", "planner", "full")
+    comparison = {
+        profile: {
+            key: {
+                "control": 1.0 if key.endswith("rate") else 100.0,
+                "treatment": (
+                    1.0
+                    if key.endswith("rate")
+                    else 90.0
+                ),
+                "delta": 0.0 if key.endswith("rate") else -10.0,
+            }
+            for key in comparison_keys
         }
+        for profile in profiles
+    }
+    tool_stats = {
+        tool: {
+            "invocation_count": 3,
+            "total_output_chars": 300,
+            "avg_output_chars": 100.0,
+            "p50_output_chars": 100,
+            "p95_output_chars": 100,
+            "max_output_chars": 100,
+        }
+        for tool in CI_TOOLS
     }
     context = {
-        "code_intelligence": {
-            "read_file_calls": 10,
-        }
+        "total_ci_output_chars": 600,
+        "read_file_calls": 3,
+        "follow_up_source_reads": 1,
     }
-    risk = _risk_classification(comparison, context)
-    assert risk["code_intelligence"]["classification"] == "possible_tool_substitution"
+    payload = {
+        "experiment_id": "phase4",
+        "model": "test",
+        "benchmark": "v2",
+        "source": {"treatment": {"git_commit": "abc"}},
+        "control_audit": {
+            "per_tool": tool_stats,
+            "total_ci_output_chars": 600,
+        },
+        "treatment_audit": {"per_tool": tool_stats},
+        "comparison": comparison,
+        "control_metrics": {
+            profile: {"metrics": {"task_runs": 45}}
+            for profile in profiles
+        },
+        "control_context": {profile: dict(context) for profile in profiles},
+        "treatment_context": {
+            profile: {**context, "total_ci_output_chars": 300}
+            for profile in profiles
+        },
+        "task_comparison": {profile: {} for profile in profiles},
+        "risk_classification": {
+            profile: {
+                "classification": "efficient_win",
+                "token_delta_percent": -0.1,
+                "ci_output_delta_percent": -0.5,
+                "read_file_call_delta": 0,
+                "success_delta": 0.0,
+            }
+            for profile in profiles
+        },
+        "run_records": [],
+    }
+    report = render_phase4_report(payload)
+    assert "CI output moved -50.0%" in report
+    assert "Efficient-win profiles: code_intelligence, planner, full" in report

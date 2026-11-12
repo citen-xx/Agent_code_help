@@ -415,6 +415,144 @@ def _aggregate(
     return result
 
 
+def _completed_treatment_paths(
+    phase_dir: Path,
+) -> dict[AgentProfile, list[Path]]:
+    """Discover exactly three complete, clean Treatment runs per profile."""
+    paths: dict[AgentProfile, list[Path]] = {}
+    commits: set[str] = set()
+    for profile in PROFILES:
+        candidates = []
+        for path in (
+            phase_dir
+            / "treatment_runs"
+            / f"variant_{profile.value}"
+        ).glob("*/report.json"):
+            report = BenchmarkReport.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+            if (
+                len(report.results) != 15
+                or report.git_dirty is not False
+                or not report.git_commit
+            ):
+                continue
+            candidates.append((report.started_at, path, report.git_commit))
+        candidates.sort()
+        if len(candidates) != 3:
+            raise RuntimeError(
+                f"Phase 4 Treatment {profile.value} 需要 3 个完整的 clean run，"
+                f"实际 {len(candidates)}"
+            )
+        paths[profile] = [item[1] for item in candidates]
+        commits.update(item[2] for item in candidates)
+    if len(commits) != 1:
+        raise RuntimeError(
+            "Phase 4 Treatment runs 必须来自同一个 commit，"
+            f"实际 {sorted(commits)}"
+        )
+    return paths
+
+
+def _assemble_phase4_artifacts(
+    *,
+    phase_dir: Path,
+    manifest: dict,
+    controls: dict[AgentProfile, list[Path]],
+    control_reports: dict[AgentProfile, list[BenchmarkReport]],
+    treatment_paths: dict[AgentProfile, list[Path]],
+    treatment_reports: dict[AgentProfile, list[BenchmarkReport]],
+) -> dict:
+    control_metrics = _aggregate(control_reports, controls)
+    treatment_metrics = _aggregate(treatment_reports, treatment_paths)
+    control_context = {
+        profile.value: _profile_context_metrics(control_reports[profile])
+        for profile in PROFILES
+    }
+    treatment_context = {
+        profile.value: _profile_context_metrics(treatment_reports[profile])
+        for profile in PROFILES
+    }
+    comparison = _comparison(control_metrics, treatment_metrics)
+    tasks_comparison = _task_comparison(
+        control_reports,
+        treatment_reports,
+    )
+    treatment_audit = _ci_stats(
+        [
+            report
+            for reports in treatment_reports.values()
+            for report in reports
+        ]
+    )
+    run_records = []
+    for profile in PROFILES:
+        for repetition, (path, report) in enumerate(
+            zip(
+                treatment_paths[profile],
+                treatment_reports[profile],
+                strict=True,
+            ),
+            start=1,
+        ):
+            run_records.append(
+                {
+                    "profile": profile.value,
+                    "repetition": repetition,
+                    "run_id": report.run_id,
+                    "report": path.relative_to(PROJECT_ROOT).as_posix(),
+                    "passed_tasks": report.summary.passed_tasks,
+                    "git_commit": report.git_commit,
+                    "git_dirty": report.git_dirty,
+                }
+            )
+    payload = {
+        "schema_version": 1,
+        "phase": "4",
+        "experiment_id": PHASE4_DIR_NAME,
+        "started_at": manifest["generated_at"],
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "model": settings.LLM_MODEL,
+        "benchmark": "v2",
+        "source": manifest,
+        "control_audit": _ci_stats(
+            [
+                report
+                for reports in control_reports.values()
+                for report in reports
+            ]
+        ),
+        "treatment_audit": treatment_audit,
+        "control_metrics": control_metrics,
+        "treatment_metrics": treatment_metrics,
+        "control_context": control_context,
+        "treatment_context": treatment_context,
+        "comparison": comparison,
+        "task_comparison": tasks_comparison,
+        "risk_classification": _risk_classification(
+            comparison,
+            control_context,
+            treatment_context,
+        ),
+        "run_records": run_records,
+    }
+    _write(
+        phase_dir / "context_audit.md",
+        render_context_audit(control_reports),
+    )
+    _write(
+        phase_dir / "context_contract_design.md",
+        render_context_contract(),
+    )
+    _write_json(phase_dir / "experiment.json", payload)
+    _write_json(phase_dir / "phase4_report.json", payload)
+    _write(
+        phase_dir / "phase4_report.md",
+        render_phase4_report(payload),
+    )
+    return payload
+
+
 def _comparison(control: dict, treatment: dict) -> dict:
     result = {}
     keys = [
@@ -566,11 +704,19 @@ def _task_comparison(
     return result
 
 
-def _risk_classification(comparison: dict, context: dict) -> dict:
+def _risk_classification(
+    comparison: dict,
+    control_context: dict,
+    treatment_context: dict,
+) -> dict:
     result = {}
     for profile in PROFILES:
         name = profile.value
-        if name not in comparison or name not in context:
+        if (
+            name not in comparison
+            or name not in control_context
+            or name not in treatment_context
+        ):
             continue
         token_delta = comparison[name]["average_tokens"]["delta"]
         success_delta = comparison[name]["success_rate"]["delta"]
@@ -580,48 +726,115 @@ def _risk_classification(comparison: dict, context: dict) -> dict:
             if token_delta is not None and control_tokens
             else 0.0
         )
-        if abs(token_pct) < 0.05:
-            classification = "no_effect"
-        elif token_pct < 0 and success_delta >= -0.05:
+        control_ci = control_context[name]["total_ci_output_chars"]
+        treatment_ci = treatment_context[name]["total_ci_output_chars"]
+        ci_delta = treatment_ci - control_ci
+        ci_pct = ci_delta / control_ci if control_ci else 0.0
+        read_delta = (
+            treatment_context[name]["read_file_calls"]
+            - control_context[name]["read_file_calls"]
+        )
+        control_reads = control_context[name]["read_file_calls"]
+        read_pct = read_delta / control_reads if control_reads else 0.0
+        if token_pct <= -0.05 and success_delta >= -0.05:
             classification = "efficient_win"
-        elif token_pct < 0:
+        elif token_pct <= -0.05:
             classification = "over_compression"
-        else:
-            classification = "other"
-        if (
-            classification == "no_effect"
-            and context[name]["read_file_calls"] > 0
-        ):
+        elif ci_pct <= -0.05 and token_pct > -0.05 and read_pct >= 0.05:
             classification = "possible_tool_substitution"
+        elif abs(token_pct) <= 0.05:
+            classification = "no_effect"
+        else:
+            classification = "token_increase"
         result[name] = {
             "classification": classification,
             "token_delta_percent": token_pct,
             "success_delta": success_delta,
+            "ci_output_delta_percent": ci_pct,
+            "read_file_call_delta": read_delta,
         }
     return result
 
 
 def render_phase4_report(payload: dict) -> str:
     comparison = payload["comparison"]
+    control_context = payload["control_context"]
+    treatment_context = payload["treatment_context"]
+    task_comparison = payload["task_comparison"]
+
+    def number(value, digits: int = 1, suffix: str = "") -> str:
+        if value is None:
+            return "N/A"
+        return f"{value:.{digits}f}{suffix}"
+
+    def percentage(value, digits: int = 1) -> str:
+        if value is None:
+            return "N/A"
+        return f"{value * 100:.{digits}f}%"
+
+    def signed_percent(delta, base) -> str:
+        if delta is None or not base:
+            return "N/A"
+        return f"{(delta / base) * 100:+.1f}%"
+
+    def metric_delta(
+        profile: str,
+        key: str,
+        *,
+        percent_points: bool = False,
+    ) -> str:
+        values = comparison[profile][key]
+        delta = values["delta"]
+        if delta is None:
+            return "N/A"
+        if percent_points:
+            return f"{delta * 100:+.1f} pp"
+        return f"{delta:+.1f} ({signed_percent(delta, values['control'])})"
+
+    control_tools = payload["control_audit"]["per_tool"]
+    ranked_tools = sorted(
+        control_tools.items(),
+        key=lambda item: item[1]["total_output_chars"],
+        reverse=True,
+    )
+    largest = ranked_tools[:2]
+    total_control_ci = payload["control_audit"]["total_ci_output_chars"]
+    largest_text = " and ".join(
+        f"`{name}` ({values['total_output_chars']} chars, "
+        f"{percentage(values['total_output_chars'] / total_control_ci, 1)})"
+        for name, values in largest
+        if total_control_ci
+    )
     lines = [
         "# Phase 4 Context Engineering Report",
         "",
+        f"- Experiment: `{payload['experiment_id']}`",
+        f"- Model: `{payload['model']}`",
+        f"- Benchmark: `{payload['benchmark']}`",
+        f"- Treatment commit: `{payload['source']['treatment']['git_commit']}`",
+        f"- Runs per Profile: {len(payload['run_records']) // len(PROFILES)}",
+        "",
         "## 1. Context Root Cause",
         "",
-        f"Control CI produced {payload['control_context']['total_ci_output_chars']} "
-        "characters across the measured runs. The largest per-tool sources were "
-        "list_symbols and analyze_impact; their JSON is retained in LangGraph "
-        "message history and repeated in later prompts.",
+        f"Old Code Intelligence produced {total_control_ci} characters across "
+        f"the {len(PROFILES) * 3} Control runs. The two largest sources were "
+        f"{largest_text}.",
+        "",
+        "Tool results are appended to LangGraph message history. Every later "
+        "LLM call therefore carries the earlier JSON again, so a large result "
+        "has a cost larger than its one-time output size. The compaction also "
+        "removed repeated candidate declarations and per-query diagnostics.",
         "",
         "## 2. Old Tool Output",
         "",
-        "| Tool | Invocations | Avg Chars | P95 | Max |",
-        "|---|---:|---:|---:|---:|",
+        "| Tool | Invocations | Total Chars | Avg Chars | P50 | P95 | Max |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    for tool, values in payload["control_audit"]["per_tool"].items():
+    for tool, values in control_tools.items():
         lines.append(
             f"| `{tool}` | {values['invocation_count']} | "
-            f"{values['avg_output_chars']:.1f} | "
+            f"{values['total_output_chars']} | "
+            f"{values['avg_output_chars']:.1f} | {values['p50_output_chars']} | "
             f"{values['p95_output_chars']} | {values['max_output_chars']} |"
         )
     lines.extend(
@@ -633,86 +846,117 @@ def render_phase4_report(payload: dict) -> str:
             "only, bounded result counts and characters, explicit truncation "
             "metadata, short reference context, and line-range read_file.",
             "",
+            "The default contract is:",
+            "",
+            f"- symbols: {DEFAULT_SYMBOL_LIMIT} default / {MAX_SYMBOL_LIMIT} max",
+            f"- references: {DEFAULT_REFERENCE_LIMIT} default / "
+            f"{MAX_REFERENCE_LIMIT} max",
+            f"- callers/callees: {DEFAULT_CALL_LIMIT} default / "
+            f"{MAX_CALL_LIMIT} max",
+            f"- impact sections: {DEFAULT_IMPACT_LIMIT} default / "
+            f"{MAX_IMPACT_LIMIT} max",
+            f"- JSON budgets: {SYMBOL_RESULT_CHARS:,} symbol/reference/call chars; "
+            f"{IMPACT_RESULT_CHARS:,} impact chars",
+            f"- source reads: at most {MAX_READ_LINES} lines per request",
+            "",
             "## 4. Safety & Correctness",
             "",
             "Exact symbol/reference relationships are preserved. Every truncation "
             "reports returned/total/truncated. No fuzzy filtering, LLM reranking, "
             "hidden-test signal, or task-specific rule is used.",
             "",
+            "Duplicate records are removed only by deterministic location/symbol "
+            "keys within one response. The Agent may still invoke tools repeatedly. "
+            "No stale cross-query cache is introduced, so patched workspaces retain "
+            "the existing Tree-sitter invalidation behavior.",
+            "",
+            "## 5. Tests",
+            "",
+            "The full local test suite is run with `uv run pytest`. Phase 4 tests "
+            "cover compact responses, deterministic budgets and truncation metadata, "
+            "duplicate removal, no method-body leakage, structured locations, "
+            "UTF-8 and multi-package/overload cases, index refresh after file "
+            "modification, telemetry serialization, and Control/Treatment isolation.",
+            "",
             "## 6. A/B Results",
             "",
-            "| Profile | Success | Hard | Prompt Tokens | Completion | Total Tokens | "
-            "LLM Calls | Agent Tools | Duration |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| Profile | Metric | Control | Treatment | Delta |",
+            "|---|---|---:|---:|---:|",
         ]
     )
+    metrics = [
+        ("Success", "success_rate", True),
+        ("Hard Success", "hard_success_rate", True),
+        ("Hidden Pass", "hidden_test_pass_rate", True),
+        ("Prompt Tokens", "average_prompt_tokens", False),
+        ("Completion Tokens", "average_completion_tokens", False),
+        ("Total Tokens", "average_tokens", False),
+        ("LLM Calls", "average_llm_calls", False),
+        ("Agent Tool Calls", "average_agent_tool_calls", False),
+        ("Duration (s)", "average_duration", False),
+    ]
     for profile in PROFILES:
-        metrics = payload["treatment_metrics"][profile.value]["metrics"]
+        for label, key, is_rate in metrics:
+            values = comparison[profile.value][key]
+            formatter = percentage if is_rate else number
+            lines.append(
+                f"| {profile.value} | {label} | "
+                f"{formatter(values['control'], 2 if key.endswith('calls') else 1)} | "
+                f"{formatter(values['treatment'], 2 if key.endswith('calls') else 1)} | "
+                f"{metric_delta(profile.value, key, percent_points=is_rate)} |"
+            )
+        control_ci = control_context[profile.value]["total_ci_output_chars"]
+        treatment_ci = treatment_context[profile.value]["total_ci_output_chars"]
+        task_runs = payload["control_metrics"][profile.value]["metrics"][
+            "task_runs"
+        ]
         lines.append(
-            f"| {profile.value} | {metrics['success_rate'] * 100:.1f}% | "
-            f"{metrics['hard_success_rate'] * 100:.1f}% | "
-            f"{metrics['average_prompt_tokens']:.1f} | "
-            f"{metrics['average_completion_tokens']:.1f} | "
-            f"{metrics['average_tokens']:.1f} | "
-            f"{metrics['average_llm_calls']:.2f} | "
-            f"{metrics['average_agent_tool_calls']:.2f} | "
-            f"{metrics['average_duration']:.1f}s |"
+            f"| {profile.value} | CI Chars / Task | "
+            f"{control_ci / task_runs:.1f} | {treatment_ci / task_runs:.1f} | "
+            f"{signed_percent(treatment_ci - control_ci, control_ci)} |"
+        )
+        control_reads = control_context[profile.value]["read_file_calls"]
+        treatment_reads = treatment_context[profile.value]["read_file_calls"]
+        lines.append(
+            f"| {profile.value} | read_file Calls (total) | "
+            f"{control_reads} | {treatment_reads} | "
+            f"{treatment_reads - control_reads:+d} |"
         )
     lines.extend(
         [
             "",
-            "### Context Delivery",
+            "### Experimental Integrity",
             "",
-            "| Profile | CI Chars Control | CI Chars Treatment | Read Files Control | "
-            "Read Files Treatment | Follow-up Reads Treatment |",
-            "|---|---:|---:|---:|---:|---:|",
+            "| Profile | Repetition | Run | Passed | Commit | Dirty |",
+            "|---|---:|---|---:|---|---|",
         ]
     )
-    for profile in PROFILES:
-        control_context = payload["control_context"][profile.value]
-        treatment_context = payload["treatment_context"][profile.value]
+    for run in payload["run_records"]:
         lines.append(
-            f"| {profile.value} | {control_context['total_ci_output_chars']} | "
-            f"{treatment_context['total_ci_output_chars']} | "
-            f"{control_context['read_file_calls']} | "
-            f"{treatment_context['read_file_calls']} | "
-            f"{treatment_context['follow_up_source_reads']} |"
-        )
-    lines.extend(
-        [
-            "",
-            "### Control → Treatment Deltas",
-            "",
-            "| Profile | Success Δ | Hard Δ | Prompt Token Δ | Total Token Δ | Duration Δ |",
-            "|---|---:|---:|---:|---:|---:|",
-        ]
-    )
-    for profile in PROFILES:
-        values = comparison[profile.value]
-        lines.append(
-            f"| {profile.value} | {values['success_rate']['delta'] * 100:+.1f} pp | "
-            f"{values['hard_success_rate']['delta'] * 100:+.1f} pp | "
-            f"{values['average_prompt_tokens']['delta']:+.1f} | "
-            f"{values['average_tokens']['delta']:+.1f} | "
-            f"{values['average_duration']['delta']:+.1f}s |"
+            f"| {run['profile']} | {run['repetition']} | `{run['run_id']}` | "
+            f"{run['passed_tasks']}/15 | `{run['git_commit']}` | "
+            f"{run['git_dirty']} |"
         )
     lines.extend(
         [
             "",
             "## 7. Per-Tool Results",
             "",
-            "| Tool | Control Avg Chars | Treatment Avg Chars | Reduction |",
-            "|---|---:|---:|---:|",
+            "| Tool | Control Invocations | Treatment Invocations | "
+            "Control Avg Chars | Treatment Avg Chars | Reduction |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
     )
     for tool in CI_TOOLS:
-        control = payload["control_audit"]["per_tool"][tool]
+        control = control_tools[tool]
         treatment = payload["treatment_audit"]["per_tool"][tool]
         old = control["avg_output_chars"]
         new = treatment["avg_output_chars"]
         reduction = (old - new) / old if old else 0.0
         lines.append(
-            f"| `{tool}` | {old:.1f} | {new:.1f} | {reduction * 100:.1f}% |"
+            f"| `{tool}` | {control['invocation_count']} | "
+            f"{treatment['invocation_count']} | {old:.1f} | {new:.1f} | "
+            f"{reduction * 100:.1f}% |"
         )
     lines.extend(
         [
@@ -720,33 +964,134 @@ def render_phase4_report(payload: dict) -> str:
             "## 8. Task-Level Results",
             "",
             "| Profile | Task | Pass Control | Pass Treatment | Tokens Control | "
-            "Tokens Treatment | CI Chars Control | CI Chars Treatment | Read Files Control | Read Files Treatment |",
-            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "Tokens Treatment | Token Δ | CI Chars Treatment | Read Files Treatment |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
-        for task_id, values in payload["task_comparison"][profile.value].items():
+        for task_id, values in task_comparison[profile.value].items():
             c = values["control"]
             t = values["treatment"]
             lines.append(
                 f"| {profile.value} | {task_id} | {c['passes']}/{c['runs']} | "
                 f"{t['passes']}/{t['runs']} | {c['tokens']:.1f} | "
-                f"{t['tokens']:.1f} | {c['ci_chars']} | {t['ci_chars']} | "
-                f"{c['read_file_calls']} | {t['read_file_calls']} |"
+                f"{t['tokens']:.1f} | "
+                f"{signed_percent(t['tokens'] - c['tokens'], c['tokens'])} | "
+                f"{t['ci_chars']} | {t['read_file_calls']} |"
             )
+    lines.extend(["", "### Largest Token Reductions", ""])
+    for profile in PROFILES:
+        ranked = sorted(
+            task_comparison[profile.value].items(),
+            key=lambda item: (
+                (item[1]["treatment"]["tokens"] - item[1]["control"]["tokens"])
+                / item[1]["control"]["tokens"]
+                if item[1]["control"]["tokens"]
+                else 0.0
+            ),
+        )[:5]
+        reductions = []
+        for task_id, values in ranked:
+            reduction = signed_percent(
+                values["treatment"]["tokens"] - values["control"]["tokens"],
+                values["control"]["tokens"],
+            )
+            reductions.append(f"`{task_id}` {reduction}")
+        lines.append(
+            f"- {profile.value}: "
+            + ", ".join(reductions)
+            + "."
+        )
+    lines.extend(["", "### Largest Token Increases", ""])
+    for profile in PROFILES:
+        ranked = sorted(
+            task_comparison[profile.value].items(),
+            key=lambda item: (
+                (item[1]["treatment"]["tokens"] - item[1]["control"]["tokens"])
+                / item[1]["control"]["tokens"]
+                if item[1]["control"]["tokens"]
+                else 0.0
+            ),
+            reverse=True,
+        )[:3]
+        increases = []
+        for task_id, values in ranked:
+            increase = signed_percent(
+                values["treatment"]["tokens"] - values["control"]["tokens"],
+                values["control"]["tokens"],
+            )
+            increases.append(f"`{task_id}` {increase}")
+        lines.append(
+            f"- {profile.value}: "
+            + ", ".join(increases)
+            + "."
+        )
+    lines.extend(["", "### Success Changes", ""])
+    any_success_change = False
+    for profile in PROFILES:
+        changes = []
+        for task_id, values in task_comparison[profile.value].items():
+            c = values["control"]
+            t = values["treatment"]
+            if c["passes"] != t["passes"]:
+                changes.append(
+                    f"`{task_id}` {c['passes']}/{c['runs']} → "
+                    f"{t['passes']}/{t['runs']}"
+                )
+        if changes:
+            any_success_change = True
+            lines.append(f"- {profile.value}: " + "; ".join(changes) + ".")
+    if not any_success_change:
+        lines.append("- No task pass-count changes at the three-run level.")
     lines.extend(
         [
             "",
             "## 9. Progressive Disclosure",
             "",
-            f"- Treatment read_file calls: "
-            f"{sum(item['read_file_calls'] for item in payload['treatment_context'].values())}.",
-            f"- Treatment follow-up source reads: "
-            f"{sum(item['follow_up_source_reads'] for item in payload['treatment_context'].values())}.",
+            "| Profile | read_file Control | read_file Treatment | Delta | "
+            "Follow-up Source Reads Treatment |",
+            "|---|---:|---:|---:|---:|",
+        ]
+    )
+    for profile in PROFILES:
+        control_reads = control_context[profile.value]["read_file_calls"]
+        treatment_reads = treatment_context[profile.value]["read_file_calls"]
+        follow_up = treatment_context[profile.value]["follow_up_source_reads"]
+        lines.append(
+            f"| {profile.value} | {control_reads} | {treatment_reads} | "
+            f"{treatment_reads - control_reads:+d} | "
+            f"{'N/A' if follow_up is None else follow_up} |"
+        )
+    follow_up_total = sum(
+        item["follow_up_source_reads"] or 0
+        for item in treatment_context.values()
+    )
+    total_control_reads = sum(
+        item["read_file_calls"] for item in control_context.values()
+    )
+    total_treatment_reads = sum(
+        item["read_file_calls"] for item in treatment_context.values()
+    )
+    lines.extend(
+        [
+            "",
+            f"- Treatment follow-up source reads: {follow_up_total}.",
+            f"- read_file calls across profiles: {total_control_reads} → "
+            f"{total_treatment_reads} "
+            f"({total_treatment_reads - total_control_reads:+d}). The near-flat "
+            "usage does not support a tool-substitution explanation.",
             "- Control follow-up linkage is unavailable because the old event "
             "telemetry did not persist result-derived file locations.",
             "",
             "## Risk Classification",
+            "",
+            "Thresholds are descriptive: a token change within ±5% is treated as "
+            "no effect; a reduction over 5% with a success delta worse than -5 pp "
+            "is over-compression. Tool substitution additionally requires lower CI "
+            "output, at least 5% more read_file calls, and no token reduction.",
+            "A token increase outside those cases is reported separately rather "
+            "than forced into one of the four predefined categories.",
+            "",
             "",
         ]
     )
@@ -755,24 +1100,49 @@ def render_phase4_report(payload: dict) -> str:
         lines.append(
             f"- {profile.value}: `{risk['classification']}`; "
             f"token Δ {risk['token_delta_percent'] * 100:+.1f}%, "
+            f"CI output Δ {risk['ci_output_delta_percent'] * 100:+.1f}%, "
+            f"read_file Δ {risk['read_file_call_delta']:+d}, "
             f"success Δ {risk['success_delta'] * 100:+.1f} pp."
         )
+    ci_risk = payload["risk_classification"][
+        AgentProfile.CODE_INTELLIGENCE.value
+    ]
+    successful_profiles = [
+        profile.value
+        for profile in PROFILES
+        if payload["risk_classification"][profile.value]["classification"]
+        == "efficient_win"
+    ]
     lines.extend(
         [
             "",
             "## 10. Conclusion",
             "",
-            "- Context compression substantially reduces CI tool output characters "
-            "and prompt tokens.",
-            "- Success is reported per profile above; no hidden-contract or prompt "
-            "optimization was performed.",
-            "- Compact CI keeps exact locations/signatures and directs detailed "
-            "source reads through line-range read_file.",
+            f"- CI output moved "
+            f"{ci_risk['ci_output_delta_percent'] * 100:+.1f}% in the primary "
+            f"Code Intelligence profile. Its total tokens moved "
+            f"{ci_risk['token_delta_percent'] * 100:+.1f}% and success moved "
+            f"{ci_risk['success_delta'] * 100:+.1f} pp.",
+            f"- Efficient-win profiles: "
+            f"{', '.join(successful_profiles) if successful_profiles else 'none'}. "
+            "The remaining profiles are reported without averaging away their "
+            "regressions or unchanged cost.",
+            "- Compact CI preserves exact discovery locations and supports explicit "
+            "line-range source reads; it does not embed a source body or optimize "
+            "hidden-contract behavior.",
+            "- The compact contract is more cost-efficient than the old contract "
+            "where the CI profile is an efficient win. A blanket default-on claim "
+            "is not supported unless Full and Planner also avoid token regressions."
+            if ci_risk["classification"] == "efficient_win"
+            else "- The experiment does not establish that compact CI is more "
+            "cost-efficient overall.",
             "",
             "## 11. Recommended Next Step",
             "",
-            "Retain the compact contract if its success delta and follow-up-read "
-            "cost are acceptable, then study hidden-contract failures separately.",
+            "Keep the deterministic compact contract, but do not broaden its "
+            "default scope yet. Run a separate Planner/Full context-budget study "
+            "that investigates step-limit failures and read_file substitution, then "
+            "address hidden-contract failures without mixing them into this A/B.",
             "",
         ]
     )
@@ -793,22 +1163,10 @@ async def run_context_ab(
     }
     manifest = _source_manifest(results_root, controls)
     _write_json(phase_dir / "source_manifest.json", manifest)
-    audit = _ci_stats(
-        [report for reports in control_reports.values() for report in reports]
-    )
-    _write(
-        phase_dir / "context_audit.md",
-        render_context_audit(control_reports),
-    )
-    _write(
-        phase_dir / "context_contract_design.md",
-        render_context_contract(),
-    )
 
     tasks = load_tasks(suite="v2")
     treatment_reports: dict[AgentProfile, list[BenchmarkReport]] = defaultdict(list)
     treatment_paths: dict[AgentProfile, list[Path]] = defaultdict(list)
-    run_records = []
     for repetition in range(1, 4):
         for profile in PROFILES:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -830,61 +1188,15 @@ async def run_context_ab(
             report, path = await runner.run()
             treatment_reports[profile].append(report)
             treatment_paths[profile].append(path)
-            run_records.append(
-                {
-                    "profile": profile.value,
-                    "repetition": repetition,
-                    "run_id": run_id,
-                    "report": path.relative_to(PROJECT_ROOT).as_posix(),
-                    "passed_tasks": report.summary.passed_tasks,
-                }
-            )
 
-    control_metrics = _aggregate(control_reports, controls)
-    treatment_metrics = _aggregate(treatment_reports, treatment_paths)
-    control_context = {
-        profile.value: _profile_context_metrics(control_reports[profile])
-        for profile in PROFILES
-    }
-    treatment_context = {
-        profile.value: _profile_context_metrics(treatment_reports[profile])
-        for profile in PROFILES
-    }
-    comparison = _comparison(control_metrics, treatment_metrics)
-    tasks_comparison = _task_comparison(control_reports, treatment_reports)
-    treatment_audit = _ci_stats(
-        [
-            report
-            for reports in treatment_reports.values()
-            for report in reports
-        ]
+    _assemble_phase4_artifacts(
+        phase_dir=phase_dir,
+        manifest=manifest,
+        controls=controls,
+        control_reports=control_reports,
+        treatment_paths=treatment_paths,
+        treatment_reports=treatment_reports,
     )
-    payload = {
-        "schema_version": 1,
-        "phase": "4",
-        "experiment_id": PHASE4_DIR_NAME,
-        "started_at": manifest["generated_at"],
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "model": settings.LLM_MODEL,
-        "benchmark": "v2",
-        "source": manifest,
-        "control_audit": audit,
-        "treatment_audit": treatment_audit,
-        "control_metrics": control_metrics,
-        "treatment_metrics": treatment_metrics,
-        "control_context": control_context,
-        "treatment_context": treatment_context,
-        "comparison": comparison,
-        "task_comparison": tasks_comparison,
-        "risk_classification": _risk_classification(
-            comparison,
-            treatment_context,
-        ),
-        "run_records": run_records,
-    }
-    _write_json(phase_dir / "experiment.json", payload)
-    _write_json(phase_dir / "phase4_report.json", payload)
-    _write(phase_dir / "phase4_report.md", render_phase4_report(payload))
     print(f"\nPhase 4 report: {phase_dir / 'phase4_report.md'}")
     return phase_dir / "phase4_report.md"
 
@@ -895,9 +1207,37 @@ def regenerate_phase4_report(
 ) -> Path:
     results_root = _resolve_results_root(output_dir)
     phase_dir = results_root / PHASE4_DIR_NAME
-    payload = json.loads(
-        (phase_dir / "experiment.json").read_text(encoding="utf-8")
-    )
+    experiment_path = phase_dir / "experiment.json"
+    if experiment_path.exists():
+        payload = json.loads(experiment_path.read_text(encoding="utf-8"))
+        payload["risk_classification"] = _risk_classification(
+            payload["comparison"],
+            payload["control_context"],
+            payload["treatment_context"],
+        )
+    else:
+        controls = _control_paths(results_root)
+        control_reports = {
+            profile: _load_reports(paths)
+            for profile, paths in controls.items()
+        }
+        treatment_paths = _completed_treatment_paths(phase_dir)
+        treatment_reports = {
+            profile: _load_reports(paths)
+            for profile, paths in treatment_paths.items()
+        }
+        manifest = json.loads(
+            (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
+        )
+        payload = _assemble_phase4_artifacts(
+            phase_dir=phase_dir,
+            manifest=manifest,
+            controls=controls,
+            control_reports=control_reports,
+            treatment_paths=treatment_paths,
+            treatment_reports=treatment_reports,
+        )
+    _write_json(experiment_path, payload)
     _write_json(phase_dir / "phase4_report.json", payload)
     report = phase_dir / "phase4_report.md"
     _write(report, render_phase4_report(payload))

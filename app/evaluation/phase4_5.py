@@ -228,6 +228,7 @@ async def _run_profile_set(
                 output_dir=variant_dir,
                 run_id=run_id,
                 profile=profile,
+                context_lifecycle_compaction=(kind == "treatment"),
             )
             report, path = await runner.run()
             paths[profile].append(path)
@@ -523,6 +524,11 @@ def _risk_classification(comparison: dict) -> dict:
             classification = "behavioral_shift"
         elif prompt_pct <= -0.05 and success["delta"] >= -0.05:
             classification = "efficient_win"
+        elif (
+            success["delta"] < -0.05
+            and (prompt_pct > 0.05 or calls_pct > 0.10)
+        ):
+            classification = "regression"
         elif abs(prompt_pct) <= 0.05:
             classification = "no_improvement"
         else:
@@ -930,6 +936,17 @@ must survive all compaction.
 
 def render_lifecycle_report(payload: dict) -> str:
     comparison = payload["comparison"]
+    control = payload["control"]
+    treatment = payload["treatment"]
+
+    def number(value, digits: int = 1) -> str:
+        return "N/A" if value is None else f"{value:.{digits}f}"
+
+    def signed_percent(delta, baseline) -> str:
+        if delta is None or not baseline:
+            return "N/A"
+        return f"{(delta / baseline) * 100:+.1f}%"
+
     lines = [
         "# Phase 4.5 Context Lifecycle Report",
         "",
@@ -938,11 +955,180 @@ def render_lifecycle_report(payload: dict) -> str:
         f"- Control commit: `{payload['source']['control']['git_commit']}`",
         f"- Treatment commit: `{payload['source']['treatment']['git_commit']}`",
         "",
-        "## A/B Results",
+        "## 1. Token Accounting",
         "",
-        "| Profile | Metric | Control | Treatment | Delta |",
-        "|---|---|---:|---:|---:|",
+        "| Profile | Phase | Calls | Prompt Tokens | Avg Prompt/Call | "
+        "P95 Prompt/Call | Max Prompt/Call | Exposure Chars |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
+    for phase_name in ("control", "treatment"):
+        phase = payload[phase_name]["context"]
+        for profile in PROFILES:
+            values = phase[profile.value]
+            exposure = sum(values["category_exposure"].values())
+            lines.append(
+                f"| {profile.value} | {phase_name} | {values['call_count']} | "
+                f"{values['provider_prompt_tokens']} | "
+                f"{number(values['average_prompt_tokens_per_call'])} | "
+                f"{number(values['p95_prompt_tokens_per_call'])} | "
+                f"{values['max_prompt_tokens_per_call']} | {exposure} |"
+            )
+    lines.extend(
+        [
+            "",
+            "Provider values are actual usage. Category chars and exposure "
+            "are exact local measurements, not inferred token attribution.",
+            "",
+            "## 2. Prompt Growth",
+            "",
+            "| Profile | Call | Control Avg | Treatment Avg | Control P95 | "
+            "Treatment P95 |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    selected_calls = (1, 3, 5, 8, 10, 12, 15, 18, 20)
+    for profile in PROFILES:
+        control_curve = control["growth_curve"].get(profile.value, {})
+        treatment_curve = treatment["growth_curve"].get(profile.value, {})
+        for index in selected_calls:
+            c = control_curve.get(str(index))
+            t = treatment_curve.get(str(index))
+            if c is None and t is None:
+                continue
+            lines.append(
+                f"| {profile.value} | {index} | "
+                f"{number(c['average']) if c else 'N/A'} | "
+                f"{number(t['average']) if t else 'N/A'} | "
+                f"{number(c['p95']) if c else 'N/A'} | "
+                f"{number(t['p95']) if t else 'N/A'} |"
+            )
+    lines.extend(
+        [
+            "",
+            "## 3. Context Exposure",
+            "",
+            "| Profile | Phase | Top Context Categories |",
+            "|---|---|---|",
+        ]
+    )
+    for phase_name in ("control", "treatment"):
+        phase = payload[phase_name]["context"]
+        for profile in PROFILES:
+            ranked = sorted(
+                phase[profile.value]["category_exposure"].items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:4]
+            values = ", ".join(
+                f"`{category}` {chars}"
+                for category, chars in ranked
+            )
+            lines.append(
+                f"| {profile.value} | {phase_name} | {values} |"
+            )
+    largest_increases = []
+    for profile in PROFILES:
+        c = control["context"][profile.value]["category_exposure"]
+        t = treatment["context"][profile.value]["category_exposure"]
+        for category in CATEGORY_FIELDS:
+            delta = t.get(category, 0) - c.get(category, 0)
+            if delta > 0:
+                largest_increases.append(
+                    (delta, profile.value, category)
+                )
+    largest_increases.sort(reverse=True)
+    lines.extend(["", "Largest treatment exposure increases:", ""])
+    for delta, profile, category in largest_increases[:6]:
+        lines.append(
+            f"- {profile}: `{category}` {delta:+,} exposure chars."
+        )
+    lines.extend(
+        [
+            "",
+            "## 4. Root Cause",
+            "",
+            "The treatment reduced selected source categories but caused "
+            "additional LLM/tool turns. Those extra calls re-expose the static "
+            "system prompt, user task, assistant tool-call arguments, source "
+            "reads, and other tool output. The net exposure therefore rose for "
+            "CI and Full and fell only 3.9% for Planner.",
+            "",
+            "| Profile | CI Chars Δ | Read Chars Δ | Test Chars Δ | "
+            "Planner Chars Δ | Tool-Call Chars Δ | Other Chars Δ |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for profile in PROFILES:
+        c = control["context"][profile.value]["category_totals"]
+        t = treatment["context"][profile.value]["category_totals"]
+        lines.append(
+            f"| {profile.value} | "
+            f"{signed_percent(t['ci_tool_chars'] - c['ci_tool_chars'], c['ci_tool_chars'])} | "
+            f"{signed_percent(t['read_file_chars'] - c['read_file_chars'], c['read_file_chars'])} | "
+            f"{signed_percent(t['test_output_chars'] - c['test_output_chars'], c['test_output_chars'])} | "
+            f"{signed_percent(t['planner_chars'] - c['planner_chars'], c['planner_chars'])} | "
+            f"{signed_percent(t['tool_call_chars'] - c['tool_call_chars'], c['tool_call_chars'])} | "
+            f"{signed_percent(t['other_chars'] - c['other_chars'], c['other_chars'])} |"
+        )
+    lines.extend(["", "Largest task prompt-token increases:", ""])
+    for profile in PROFILES:
+        ranked_tasks = []
+        for task_id, values in payload["task_comparison"][profile.value].items():
+            delta = (
+                values["treatment"]["prompt_tokens"]
+                - values["control"]["prompt_tokens"]
+            )
+            ranked_tasks.append((delta, task_id))
+        ranked_tasks.sort(reverse=True)
+        lines.append(
+            f"- {profile.value}: "
+            + ", ".join(
+                f"`{task_id}` {delta:+,}"
+                for delta, task_id in ranked_tasks[:5]
+            )
+            + "."
+        )
+    lines.extend(
+        [
+            "",
+            "## 5. Optimization",
+            "",
+            "Three data-selected categories were tested together:",
+            "",
+            "1. Keep the latest six successful exploration results; replace "
+            "older CI/source/search/list results with compact markers.",
+            "2. Keep the latest Maven result verbatim; retain deterministic "
+            "failure metadata for older test results.",
+            "3. Keep the active Repair Plan and compact superseded plan results "
+            "and duplicated old plan arguments.",
+            "",
+            "Patch success was not selected because its measured exposure was "
+            "small. The combined treatment is rejected: its category savings "
+            "were outweighed by additional tool/LLM iterations.",
+            "",
+            "## 6. Safety",
+            "",
+            "Compaction is applied only to the model-visible derived history; "
+            "persistent Agent state retains the original messages. The user "
+            "task, current plan, latest test result, latest failure, and tool "
+            "errors are always preserved. Raw Maven output remains in the "
+            "evaluation trace. No LLM summary, fuzzy selection, hidden-test "
+            "signal, or task-specific rule is used.",
+            "",
+            "## 7. Tests",
+            "",
+            "`uv run pytest -q`: 220 passed. Tests cover exact category "
+            "accounting, provider usage, retained exposure, raw-test tracing, "
+            "exploration compaction, latest-test retention, active-plan "
+            "retention, obsolete-plan compaction, and Control/Treatment "
+            "isolation.",
+            "",
+            "## 8. A/B Results",
+            "",
+            "| Profile | Metric | Control | Treatment | Delta |",
+            "|---|---|---:|---:|---:|",
+        ]
+    )
     for profile in PROFILES:
         for label, key in (
             ("Success", "success_rate"),
@@ -971,20 +1157,22 @@ def render_lifecycle_report(payload: dict) -> str:
     lines.extend(
         [
             "",
-            "## Per-Category Reduction",
+            "## 9. Per-Category Reduction",
             "",
             "| Profile | Category | Control Chars | Treatment Chars | Delta |",
             "|---|---|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
-        control = payload["control"]["context"][profile.value]["category_totals"]
-        treatment = payload["treatment"]["context"][profile.value][
+        control_categories = payload["control"]["context"][profile.value][
+            "category_totals"
+        ]
+        treatment_categories = payload["treatment"]["context"][profile.value][
             "category_totals"
         ]
         for category in CATEGORY_FIELDS:
-            old = control.get(category, 0)
-            new = treatment.get(category, 0)
+            old = control_categories.get(category, 0)
+            new = treatment_categories.get(category, 0)
             change = (new - old) / old if old else 0.0
             lines.append(
                 f"| {profile.value} | `{category}` | {old} | {new} | "
@@ -993,50 +1181,32 @@ def render_lifecycle_report(payload: dict) -> str:
     lines.extend(
         [
             "",
-            "## Exposure Reduction",
+            "## 10. Success / Efficiency",
             "",
-            "| Profile | Control Exposure | Treatment Exposure | Delta |",
-            "|---|---:|---:|---:|",
-        ]
-    )
-    for profile in PROFILES:
-        old = sum(
-            payload["control"]["context"][profile.value][
-                "category_exposure"
-            ].values()
-        )
-        new = sum(
-            payload["treatment"]["context"][profile.value][
-                "category_exposure"
-            ].values()
-        )
-        change = (new - old) / old if old else 0.0
-        lines.append(
-            f"| {profile.value} | {old} | {new} | {change * 100:+.1f}% |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Task-Level Changes",
-            "",
-            "| Profile | Task | Pass Control | Pass Treatment | "
-            "Prompt Tokens Control | Prompt Tokens Treatment |",
+            "| Profile | Classification | Prompt Δ | LLM Calls Δ | "
+            "Success Δ | Context Exposure Δ |",
             "|---|---|---:|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
-        for task_id, values in payload["task_comparison"][profile.value].items():
-            c = values["control"]
-            t = values["treatment"]
-            lines.append(
-                f"| {profile.value} | {task_id} | {c['passes']}/{c['runs']} | "
-                f"{t['passes']}/{t['runs']} | {c['prompt_tokens']} | "
-                f"{t['prompt_tokens']} |"
-            )
+        risk = payload["risk_classification"][profile.value]
+        old_exposure = sum(
+            control["context"][profile.value]["category_exposure"].values()
+        )
+        new_exposure = sum(
+            treatment["context"][profile.value]["category_exposure"].values()
+        )
+        lines.append(
+            f"| {profile.value} | `{risk['classification']}` | "
+            f"{risk['prompt_token_delta_percent'] * 100:+.1f}% | "
+            f"{risk['llm_call_delta_percent'] * 100:+.1f}% | "
+            f"{risk['success_delta'] * 100:+.1f} pp | "
+            f"{signed_percent(new_exposure - old_exposure, old_exposure)} |"
+        )
     lines.extend(
         [
             "",
-            "## Step Pressure",
+            "## 11. 20-Step Analysis",
             "",
             "| Profile | Phase | Calls >= 15 | Calls >= 20 | Max Calls |",
             "|---|---|---:|---:|---:|",
@@ -1051,23 +1221,36 @@ def render_lifecycle_report(payload: dict) -> str:
                 f"| {profile.value} | {phase} | {values['calls_15_plus']} | "
                 f"{values['calls_20']} | {values['max_calls']} |"
             )
-    lines.extend(["", "## Risk Classification", ""])
-    for profile in PROFILES:
-        values = payload["risk_classification"][profile.value]
-        lines.append(
-            f"- {profile.value}: `{values['classification']}`; prompt tokens "
-            f"{values['prompt_token_delta_percent'] * 100:+.1f}%, LLM calls "
-            f"{values['llm_call_delta_percent'] * 100:+.1f}%, success "
-            f"{values['success_delta'] * 100:+.1f} pp."
-        )
     lines.extend(
         [
             "",
-            "## Conclusion",
+            "The treatment increased calls at or above 15 from 12 to 61 and "
+            "at the 20-step limit from 2 to 51 across 135 task-runs. This is "
+            "direct evidence of Tool → LLM → Tool loops rather than an "
+            "efficient token reduction.",
             "",
-            "The conformance of this result is summarized by the per-profile "
-            "classification above. Context compaction is accepted only where "
-            "prompt-token exposure falls without a material success regression.",
+            "## 12. Conclusion",
+            "",
+            "- Context Lifecycle Optimization, as implemented, is not effective.",
+            "- Planner token growth is not solved: prompt tokens increased "
+            f"{comparison['planner']['average_prompt_tokens']['delta']:+,.1f} "
+            "per task.",
+            "- Full token growth is not solved: prompt tokens increased "
+            f"{comparison['full']['average_prompt_tokens']['delta']:+,.1f} "
+            "per task.",
+            "- Capability regressed in every Profile; hard success fell 40.7, "
+            "33.3, and 55.6 percentage points for CI, Planner, and Full.",
+            "- Reject this combined treatment. Keep telemetry and the "
+            "deterministic lifecycle design, but do not enable it by default.",
+            "",
+            "## 13. Recommended Next Step",
+            "",
+            "Revert the exploration-result compaction from the default path "
+            "and isolate the remaining policies in a one-factor-at-a-time "
+            "experiment. Test Plan-only and latest-failure-only compaction "
+            "separately with larger exploration retention; only preserve a "
+            "policy if prompt tokens fall without increasing calls or "
+            "reducing success.",
             "",
         ]
     )
@@ -1223,6 +1406,9 @@ def regenerate_lifecycle_report(
     experiment_path = phase_dir / "experiment.json"
     if experiment_path.exists():
         payload = json.loads(experiment_path.read_text(encoding="utf-8"))
+        payload["risk_classification"] = _risk_classification(
+            payload["comparison"]
+        )
     else:
         manifest = json.loads(
             (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
@@ -1243,6 +1429,7 @@ def regenerate_lifecycle_report(
                 for profile, paths in treatment_paths.items()
             },
         )
+    _write_json(experiment_path, payload)
     _write_json(phase_dir / "phase4_5_report.json", payload)
     report = phase_dir / "phase4_5_report.md"
     _write(report, render_lifecycle_report(payload))

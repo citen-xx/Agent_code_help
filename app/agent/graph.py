@@ -480,6 +480,7 @@ def build_agent_graph(
     max_steps: int = DEFAULT_MAX_STEPS,
     capabilities: AgentCapabilities = FULL_CAPABILITIES,
     profile: AgentProfile = DEFAULT_AGENT_PROFILE,
+    context_lifecycle_compaction: bool = False,
 ):
     """Build the compiled agent graph: LLM <-> tools until a final answer."""
     tools_by_name = {tool.name: tool for tool in tools}
@@ -508,9 +509,12 @@ def build_agent_graph(
                     profile=profile.value,
                     raw_messages=state["messages"],
                 )
-            response = llm.invoke(
+            model_messages = (
                 compact_model_messages(state["messages"])
+                if context_lifecycle_compaction
+                else state["messages"]
             )
+            response = llm.invoke(model_messages)
         except Exception as exc:
             logger.exception("LLM call failed (step %d)", state["step_count"] + 1)
             return {
@@ -823,6 +827,7 @@ async def run_agent(
     workspace_id: str | None = None,
     workspace_manager=None,
     profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
+    context_lifecycle_compaction: bool = False,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -867,6 +872,7 @@ async def run_agent(
         max_steps=max_steps,
         capabilities=capabilities,
         profile=resolved_profile,
+        context_lifecycle_compaction=context_lifecycle_compaction,
     )
 
     initial_state: AgentState = {

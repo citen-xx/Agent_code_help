@@ -1,6 +1,7 @@
 """Tests for Phase 4.5 context accounting and lifecycle exposure."""
 
 import json
+from inspect import signature
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -8,6 +9,8 @@ from app.agent.context_lifecycle import (
     MAX_RETAINED_EXPLORATION_RESULTS,
     compact_model_messages,
 )
+from app.agent.graph import run_agent
+from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.usage import UsageTracker
 
 
@@ -169,3 +172,14 @@ def test_raw_test_capture_uses_original_messages_before_compaction():
     )
     context = tracker.snapshot_context()
     assert context.raw_test_outputs[0].content == "raw-log"
+
+
+def test_lifecycle_compaction_is_opt_in_by_default():
+    assert (
+        signature(run_agent)
+        .parameters["context_lifecycle_compaction"]
+        .default
+        is False
+    )
+    runner = BenchmarkRunner([], run_id="isolation")
+    assert runner.context_lifecycle_compaction is False

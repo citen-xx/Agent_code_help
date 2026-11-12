@@ -189,12 +189,32 @@ async def _run_profile_set(
     *,
     phase_dir: Path,
     kind: str,
+    reuse_existing: bool = False,
 ) -> tuple[dict[AgentProfile, list[Path]], dict[AgentProfile, list[BenchmarkReport]]]:
     tasks = load_tasks(suite="v2")
     paths: dict[AgentProfile, list[Path]] = defaultdict(list)
     reports: dict[AgentProfile, list[BenchmarkReport]] = defaultdict(list)
+    if reuse_existing:
+        for profile in PROFILES:
+            candidates = _completed_paths(
+                phase_dir / f"{kind}_runs" / f"variant_{profile.value}"
+            )
+            for _, path, _ in candidates:
+                paths[profile].append(path)
+                reports[profile].append(
+                    BenchmarkReport.model_validate_json(
+                        path.read_text(encoding="utf-8")
+                    )
+                )
     for repetition in range(1, 4):
         for profile in PROFILES:
+            if len(paths[profile]) >= repetition:
+                print(
+                    f"\n=== skip existing {kind} {profile.value} "
+                    f"repetition {repetition}/3 ===",
+                    flush=True,
+                )
+                continue
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             run_id = f"{kind}_{profile.value}_r{repetition:02d}_{stamp}"
             variant_dir = phase_dir / f"{kind}_runs" / f"variant_{profile.value}"
@@ -1164,6 +1184,7 @@ async def run_lifecycle_treatment(
     treatment_paths, treatment_reports = await _run_profile_set(
         phase_dir=phase_dir,
         kind="treatment",
+        reuse_existing=True,
     )
     payload = _build_payload(
         phase_dir=phase_dir,

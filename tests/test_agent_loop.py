@@ -90,6 +90,49 @@ async def test_max_steps_terminates_safely(repo):
     assert model.calls == 3  # never exceeded the limit
 
 
+async def test_adaptive_budget_does_not_extend_pure_exploration(repo):
+    model = FakeChatModel(
+        script=[
+            tool_call("list_files", {"path": "."}, f"call_{i}")
+            for i in range(25)
+        ]
+    )
+    result = await run_agent(
+        "分析项目",
+        repo,
+        model=model,
+        step_budget_policy="adaptive_20_30",
+    )
+    assert result.steps == 20
+    assert model.calls == 20
+    assert result.budget_telemetry is not None
+    assert result.budget_telemetry.extensions_granted == 0
+    assert (
+        result.budget_telemetry.termination_reason
+        == "base_step_limit_no_progress"
+    )
+
+
+async def test_fixed_30_budget_uses_same_graph(repo):
+    model = FakeChatModel(
+        script=[
+            tool_call("list_files", {"path": "."}, f"call_{i}")
+            for i in range(31)
+        ]
+    )
+    result = await run_agent(
+        "分析项目",
+        repo,
+        model=model,
+        step_budget_policy="fixed_30",
+    )
+    assert result.steps == 30
+    assert model.calls == 30
+    assert result.budget_telemetry is not None
+    assert result.budget_telemetry.policy == "fixed_30"
+    assert result.budget_telemetry.termination_reason == "max_30"
+
+
 async def test_llm_exception_terminates_safely(repo):
     model = FakeChatModel(script=[], error=RuntimeError("connection reset"))
     result = await run_agent("分析项目", repo, model=model)

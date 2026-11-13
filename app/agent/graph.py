@@ -45,6 +45,14 @@ from app.agent.capabilities import (
     capabilities_for,
     resolve_profile,
 )
+from app.agent.budget import (
+    BudgetExtension,
+    BudgetProgress,
+    StepBudgetPolicy,
+    StepBudgetPolicyName,
+    StepBudgetTelemetry,
+    create_step_budget_policy,
+)
 from app.agent.context_lifecycle import compact_model_messages
 from app.agent.state import AgentState
 from app.agent.telemetry import PatchErrorCategory, ToolEvent
@@ -495,6 +503,131 @@ def _ci_telemetry(events: list[ToolEvent]) -> dict:
     }
 
 
+def _budget_progress(state: AgentState) -> BudgetProgress:
+    events = list(state.get("tool_events", []))
+    current_step = state["step_count"]
+    recent_threshold = current_step - 4
+
+    def latest_step(predicate) -> int | None:
+        return max(
+            (
+                event.step
+                for event in events
+                if predicate(event)
+            ),
+            default=None,
+        )
+
+    plan_steps = [
+        event.step
+        for event in events
+        if event.tool_name == "create_repair_plan" and event.success
+    ]
+    patch_steps = [
+        event.step
+        for event in events
+        if event.tool_name == "apply_patch"
+        and event.success
+        and event.patch_applied is not False
+    ]
+    last_test_step = latest_step(
+        lambda event: event.tool_name == "run_tests" and event.invoked
+    )
+    test_result = state.get("test_result")
+    recent_execution_events = []
+    for event in events:
+        if event.step < recent_threshold:
+            continue
+        if event.tool_name == "create_repair_plan" and event.success:
+            recent_execution_events.append(
+                f"step {event.step}: create_repair_plan"
+            )
+        elif (
+            event.tool_name == "apply_patch"
+            and event.success
+            and event.patch_applied is not False
+        ):
+            recent_execution_events.append(f"step {event.step}: apply_patch")
+        elif event.tool_name == "run_tests" and event.invoked:
+            recent_execution_events.append(f"step {event.step}: run_tests")
+    recent_execution_events = list(dict.fromkeys(recent_execution_events))
+    return BudgetProgress(
+        step_count=current_step,
+        current_step_limit=state.get(
+            "effective_step_limit",
+            state["step_count"],
+        ),
+        final_test_passed=bool(test_result and test_result.success),
+        plan_active=state.get("repair_plan") is not None,
+        plan_stale=bool(state.get("plan_stale", True)),
+        last_plan_step=max(plan_steps, default=None),
+        last_successful_patch_step=max(patch_steps, default=None),
+        last_test_step=last_test_step,
+        last_test_failed=bool(test_result and not test_result.success),
+        has_seen_test_failure=bool(
+            state.get("has_seen_test_failure", False)
+        ),
+        repair_rounds=int(state.get("repair_rounds", 0)),
+        recent_execution_events=recent_execution_events,
+    )
+
+
+def _budget_termination_reason(
+    policy: StepBudgetPolicy,
+    state: AgentState,
+    decision_reason: str,
+) -> str:
+    effective_limit = state.get(
+        "effective_step_limit",
+        policy.base_step_limit,
+    )
+    if effective_limit >= policy.hard_step_limit:
+        if policy.name == StepBudgetPolicyName.ADAPTIVE_20_30.value:
+            return "max_30"
+        if policy.hard_step_limit == 30:
+            return "max_30"
+        return "base_step_limit_no_progress"
+    if state.get("budget_extensions"):
+        return "adaptive_extended_then_limit"
+    if decision_reason == "exploration_only":
+        return "base_step_limit_no_progress"
+    return "base_step_limit_no_progress"
+
+
+def _step_budget_telemetry(
+    policy: StepBudgetPolicy,
+    state: AgentState,
+) -> StepBudgetTelemetry:
+    extensions = list(state.get("budget_extensions", []))
+    termination_reason = state.get("termination_reason")
+    if termination_reason is None:
+        test_result = state.get("test_result")
+        if test_result is not None and test_result.success:
+            termination_reason = "success"
+        else:
+            termination_reason = "agent_end"
+    return StepBudgetTelemetry(
+        policy=policy.name,
+        base_step_limit=policy.base_step_limit,
+        hard_step_limit=policy.hard_step_limit,
+        effective_step_limit=state.get(
+            "effective_step_limit",
+            policy.base_step_limit,
+        ),
+        extensions_granted=len(extensions),
+        extension_steps_granted=sum(
+            extension.steps_granted for extension in extensions
+        ),
+        extension_steps=extensions,
+        extension_reason=extensions[-1].reason if extensions else None,
+        step_at_extension=(
+            extensions[0].step_at_extension if extensions else None
+        ),
+        last_progress_event=state.get("last_progress_event"),
+        termination_reason=termination_reason,
+    )
+
+
 def build_agent_graph(
     model: BaseChatModel,
     tools: list[BaseTool],
@@ -502,21 +635,76 @@ def build_agent_graph(
     capabilities: AgentCapabilities = FULL_CAPABILITIES,
     profile: AgentProfile = DEFAULT_AGENT_PROFILE,
     context_lifecycle_compaction: bool = False,
+    step_budget_policy: StepBudgetPolicy | None = None,
 ):
     """Build the compiled agent graph: LLM <-> tools until a final answer."""
     tools_by_name = {tool.name: tool for tool in tools}
+    budget_policy = step_budget_policy or create_step_budget_policy(
+        f"fixed_{max_steps}",
+        legacy_max_steps=max_steps,
+    )
 
     def agent_node(state: AgentState) -> dict:
         """Call the LLM with bound tools; update step counter / final answer."""
-        if state["step_count"] >= max_steps:
-            logger.warning("Max steps (%d) reached — terminating safely", max_steps)
-            return {
-                "current_step": "finished",
-                "final_answer": (
-                    f"已达到最大步骤数（{max_steps}），Agent 已安全停止。"
-                    "如需继续分析，请缩小任务范围后重试。"
-                ),
-            }
+        effective_limit = state.get(
+            "effective_step_limit",
+            budget_policy.base_step_limit,
+        )
+        budget_update: dict = {}
+        if state["step_count"] >= effective_limit:
+            progress = _budget_progress(state)
+            decision = budget_policy.should_extend(progress)
+            if decision.extend and effective_limit < budget_policy.hard_step_limit:
+                new_limit = min(
+                    effective_limit + decision.extra_steps,
+                    budget_policy.hard_step_limit,
+                )
+                extension = BudgetExtension(
+                    step_at_extension=state["step_count"],
+                    previous_limit=effective_limit,
+                    new_limit=new_limit,
+                    steps_granted=new_limit - effective_limit,
+                    reason=decision.reason,
+                    last_progress_event=decision.last_progress_event,
+                )
+                logger.info(
+                    "Step budget extended %d -> %d (%s)",
+                    effective_limit,
+                    new_limit,
+                    decision.reason,
+                )
+                budget_update = {
+                    "effective_step_limit": new_limit,
+                    "budget_extensions": [extension],
+                    "last_progress_event": (
+                        decision.last_progress_event
+                        or state.get("last_progress_event")
+                    ),
+                }
+            else:
+                termination_reason = _budget_termination_reason(
+                    budget_policy,
+                    state,
+                    decision.reason,
+                )
+                logger.warning(
+                    "Step budget stopped at %d (%s)",
+                    effective_limit,
+                    decision.reason,
+                )
+                return {
+                    "current_step": "finished",
+                    "final_answer": (
+                        f"已达到最大步骤数（{effective_limit}），"
+                        f"Budget Policy 停止原因：{decision.reason}。"
+                        "如需继续分析，请缩小任务范围后重试。"
+                    ),
+                    "termination_reason": termination_reason,
+                    "last_progress_event": (
+                        decision.last_progress_event
+                        or state.get("last_progress_event")
+                    ),
+                }
         try:
             llm = model.bind_tools(tools) if tools else model
             set_context_metadata = getattr(
@@ -539,12 +727,15 @@ def build_agent_graph(
         except Exception as exc:
             logger.exception("LLM call failed (step %d)", state["step_count"] + 1)
             return {
+                **budget_update,
                 "current_step": "error",
                 "step_count": state["step_count"] + 1,
                 "final_answer": f"LLM 调用失败（可能为超时或网络错误），Agent 已停止：{exc}",
+                "termination_reason": "error",
             }
         content = response.content if isinstance(response.content, str) else ""
         update: dict = {
+            **budget_update,
             "messages": [response],
             "current_step": "thinking",
             "step_count": state["step_count"] + 1,
@@ -552,6 +743,12 @@ def build_agent_graph(
         if not getattr(response, "tool_calls", None):
             update["current_step"] = "finished"
             update["final_answer"] = content or "（模型未返回内容）"
+            test_result = state.get("test_result")
+            update["termination_reason"] = (
+                "success"
+                if test_result is not None and test_result.success
+                else "agent_end"
+            )
         return update
 
     def tools_node(state: AgentState) -> dict:
@@ -567,6 +764,7 @@ def build_agent_graph(
         plan_stale = state.get("plan_stale", True)
         latest_patch_diff = state.get("latest_patch_diff", "")
         last_failure_summary = state.get("last_failure_summary")
+        last_progress_event = state.get("last_progress_event")
         tool_events: list[ToolEvent] = []
         calls = getattr(last, "tool_calls", None) or []
         patch_requested = any(call.get("name") == "apply_patch" for call in calls)
@@ -637,6 +835,9 @@ def build_agent_graph(
                         )
                         if has_seen_test_failure:
                             repair_rounds += 1
+                        last_progress_event = (
+                            f"step {max(state['step_count'], 1)}: apply_patch"
+                        )
                     else:
                         invocation_succeeded = False
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -678,6 +879,9 @@ def build_agent_graph(
                     )
                     repair_plan = plan
                     plan_stale = False
+                    last_progress_event = (
+                        f"step {max(state['step_count'], 1)}: create_repair_plan"
+                    )
                 except ValueError:
                     logger.warning(
                         "Could not parse create_repair_plan result: %s",
@@ -686,6 +890,9 @@ def build_agent_graph(
             elif invocation_succeeded and name == "run_tests":
                 try:
                     latest_test = TestRunResult.model_validate_json(content)
+                    last_progress_event = (
+                        f"step {max(state['step_count'], 1)}: run_tests"
+                    )
                     if not latest_test.success:
                         has_seen_test_failure = True
                         plan_stale = True
@@ -753,6 +960,9 @@ def build_agent_graph(
             try:
                 auto_content = str(run_tests_tool.invoke({"tool": "maven"}))
                 latest_test = TestRunResult.model_validate_json(auto_content)
+                last_progress_event = (
+                    f"step {state['step_count']}: run_tests"
+                )
                 if not latest_test.success:
                     has_seen_test_failure = True
                     plan_stale = True
@@ -791,15 +1001,22 @@ def build_agent_graph(
             if latest_test is not None and latest_test.success:
                 current_step = "finished"
                 final_answer = "Maven 测试通过，自动修复闭环已结束。"
+                termination_reason = "success"
             elif repair_rounds >= MAX_REPAIR_ROUNDS:
                 current_step = "finished"
                 final_answer = (
                     f"已达到最多 {MAX_REPAIR_ROUNDS} 轮自动修复，"
                     "Maven 测试仍未通过。"
                 )
+                termination_reason = "agent_end"
+            else:
+                termination_reason = None
         elif explicit_test_passed:
             current_step = "finished"
             final_answer = "Maven 测试通过，自动修复闭环已结束。"
+            termination_reason = "success"
+        else:
+            termination_reason = None
 
         logger.info(
             "Executed %d message(s) (step %d, auto_test=%s)",
@@ -821,6 +1038,8 @@ def build_agent_graph(
             "latest_patch_diff": latest_patch_diff,
             "last_failure_summary": last_failure_summary,
             "tool_events": tool_events,
+            "last_progress_event": last_progress_event,
+            "termination_reason": termination_reason,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -858,6 +1077,7 @@ async def run_agent(
     profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
     context_lifecycle_compaction: bool = False,
     test_runner: Callable | None = None,
+    step_budget_policy: str | StepBudgetPolicy | None = None,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -867,6 +1087,14 @@ async def run_agent(
     """
     resolved_profile = resolve_profile(profile)
     capabilities = capabilities_for(resolved_profile)
+    budget_policy = (
+        step_budget_policy
+        if isinstance(step_budget_policy, StepBudgetPolicy)
+        else create_step_budget_policy(
+            step_budget_policy or f"fixed_{max_steps}",
+            legacy_max_steps=max_steps,
+        )
+    )
     model = model or build_chat_model()
     tools = create_repo_tools(repository_path)
     if workspace_id:
@@ -904,6 +1132,7 @@ async def run_agent(
         capabilities=capabilities,
         profile=resolved_profile,
         context_lifecycle_compaction=context_lifecycle_compaction,
+        step_budget_policy=budget_policy,
     )
 
     initial_state: AgentState = {
@@ -923,12 +1152,16 @@ async def run_agent(
         "last_failure_summary": None,
         "tool_events": [],
         "started_monotonic": time.monotonic(),
+        "effective_step_limit": budget_policy.base_step_limit,
+        "budget_extensions": [],
+        "termination_reason": None,
+        "last_progress_event": None,
     }
 
     logger.info(
-        "Agent run started (repo=%s, max_steps=%d, profile=%s)",
+        "Agent run started (repo=%s, step_budget=%s, profile=%s)",
         repository_path,
-        max_steps,
+        budget_policy.name,
         resolved_profile.value,
     )
     try:
@@ -958,6 +1191,7 @@ async def run_agent(
     latest_test = result.get("test_result")
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
+    budget_telemetry = _step_budget_telemetry(budget_policy, result)
     final_diff = ""
     if workspace_id and modified_files:
         try:
@@ -1034,4 +1268,5 @@ async def run_agent(
         diff=final_diff,
         repair_plan=repair_plan,
         plan_revisions=plan_revisions,
+        budget_telemetry=budget_telemetry,
     )

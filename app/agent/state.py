@@ -5,6 +5,7 @@ from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
 
+from app.agent.budget import BudgetExtension
 from app.repair.models import PlanRevision, RepairPlan
 from app.agent.telemetry import ToolEvent
 from app.workspace.models import TestRunResult
@@ -31,6 +32,10 @@ class AgentState(TypedDict):
         last_failure_summary: Most recent test failure summary.
         tool_events: Passive telemetry for every tool execution.
         started_monotonic: Agent-run start timestamp for relative telemetry.
+        effective_step_limit: Current policy-enforced LLM-call limit.
+        budget_extensions: Deterministic adaptive-budget decisions.
+        termination_reason: Stable reason why the Agent loop ended.
+        last_progress_event: Most recent plan/patch/test progress marker.
     """
 
     task: str
@@ -49,3 +54,7 @@ class AgentState(TypedDict):
     last_failure_summary: str | None
     tool_events: Annotated[list[ToolEvent], operator.add]
     started_monotonic: float
+    effective_step_limit: int
+    budget_extensions: Annotated[list[BudgetExtension], operator.add]
+    termination_reason: str | None
+    last_progress_event: str | None

@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.agent.budget import StepBudgetTelemetry
 from app.agent.capabilities import DEFAULT_AGENT_PROFILE, AgentProfile
 from app.agent.telemetry import ToolEvent
 from app.repair.models import PlanRevision, RepairPlan
@@ -109,4 +110,8 @@ class AnalyzeResponse(BaseModel):
     plan_revisions: list[PlanRevision] = Field(
         default_factory=list,
         description="Chronological repair-plan revision history.",
+    )
+    budget_telemetry: StepBudgetTelemetry | None = Field(
+        default=None,
+        description="Deterministic step-budget decisions and termination data.",
     )

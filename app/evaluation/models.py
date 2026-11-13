@@ -4,6 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from app.agent.budget import StepBudgetTelemetry
 from app.agent.telemetry import ToolEvent
 from app.repair.models import PlanRevision
 from app.schemas.agent import AnalyzeResponse
@@ -191,6 +192,7 @@ class BenchmarkTaskResult(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
     context_telemetry: ContextTelemetry = Field(default_factory=ContextTelemetry)
+    budget_telemetry: StepBudgetTelemetry | None = None
     benchmark_metrics: dict = Field(default_factory=dict)
     secondary_observations: list[str] = Field(default_factory=list)
 
@@ -227,6 +229,7 @@ class BenchmarkReport(BaseModel):
     model: str = "unknown"
     benchmark: str = "unknown"
     variant: str = "full"
+    budget_policy: str | None = None
     capabilities: dict[str, bool] = Field(default_factory=dict)
     git_commit: str | None = None
     git_dirty: bool | None = None

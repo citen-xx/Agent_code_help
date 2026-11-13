@@ -17,6 +17,10 @@ from app.agent.capabilities import (
     capabilities_for,
     resolve_profile,
 )
+from app.agent.budget import (
+    StepBudgetPolicy,
+    create_step_budget_policy,
+)
 from app.agent.graph import run_agent
 from app.core.config import settings
 from app.evaluation.models import (
@@ -75,6 +79,7 @@ class BenchmarkRunner:
         profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
         context_lifecycle_compaction: bool = False,
         max_steps: int = 20,
+        step_budget_policy: str | StepBudgetPolicy | None = None,
     ):
         self.tasks = tasks
         self.output_dir = Path(output_dir)
@@ -91,6 +96,15 @@ class BenchmarkRunner:
         self.capabilities = capabilities_for(self.profile)
         self.context_lifecycle_compaction = context_lifecycle_compaction
         self.max_steps = max_steps
+        self.step_budget_policy = (
+            step_budget_policy
+            if isinstance(step_budget_policy, StepBudgetPolicy)
+            else create_step_budget_policy(
+                step_budget_policy or f"fixed_{max_steps}",
+                legacy_max_steps=max_steps,
+            )
+        )
+        self.step_budget_policy_name = self.step_budget_policy.name
         self.started_at = datetime.now(timezone.utc).isoformat()
         try:
             self.git_commit = git.head_commit(PROJECT_ROOT)
@@ -125,6 +139,7 @@ class BenchmarkRunner:
             context_lifecycle_compaction=self.context_lifecycle_compaction,
             test_runner=self.test_runner,
             max_steps=self.max_steps,
+            step_budget_policy=self.step_budget_policy,
         )
         return AgentRunOutput(
             response=response,
@@ -443,6 +458,9 @@ class BenchmarkRunner:
             total_tokens=usage.total_tokens,
             estimated_cost_usd=usage.estimated_cost_usd,
             context_telemetry=context_telemetry or ContextTelemetry(),
+            budget_telemetry=(
+                response.budget_telemetry if response else None
+            ),
             benchmark_metrics=benchmark_metrics or {},
             secondary_observations=secondary_observations or [],
         )
@@ -864,6 +882,7 @@ class BenchmarkRunner:
             model=self.model_name,
             benchmark="+".join(suites) if suites else "unknown",
             variant=self.profile.value,
+            budget_policy=self.step_budget_policy_name,
             capabilities=self.capabilities.as_dict(),
             git_commit=self.git_commit,
             git_dirty=self.git_dirty,
@@ -883,6 +902,7 @@ class BenchmarkRunner:
             "model": report.model,
             "benchmark": report.benchmark,
             "variant": report.variant,
+            "budget_policy": report.budget_policy,
             "capabilities": report.capabilities,
             "git_commit": report.git_commit,
             "git_dirty": report.git_dirty,

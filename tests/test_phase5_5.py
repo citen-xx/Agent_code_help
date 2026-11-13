@@ -1,5 +1,7 @@
 """Tests for Phase 5.5 stability and search-to-patch diagnostics."""
 
+import json
+
 from app.agent.capabilities import AgentProfile
 from app.agent.telemetry import ToolEvent
 from app.evaluation.models import (
@@ -9,6 +11,7 @@ from app.evaluation.models import (
     ContextTelemetry,
 )
 from app.evaluation.phase5_5 import (
+    _ci_planner_observation,
     _overlaps,
     _step_budget_records,
     _stability,
@@ -169,6 +172,49 @@ def test_overlap_and_stability_classification():
         "stable_fail": 1,
         "unstable": 1,
     }
+
+
+def test_timeline_keeps_no_patch_runs_and_serializes():
+    task = _task("task-a")
+    events = [
+        _event(
+            1,
+            "read_file",
+            step=1,
+            target="src/main/java/example/Foo.java",
+            start=1,
+            end=20,
+        ),
+        _event(2, "search_code", step=2, query="Foo"),
+    ]
+    report = _report(task, _result(task.task_id, events, False))
+    timeline = _timeline(task, report, report.results[0])
+    assert timeline["first_relevant_file_step"] == 1
+    assert timeline["first_patch_step"] is None
+    assert timeline["relevant_to_patch_gap"] is None
+    assert timeline["patch_attempted"] is False
+    assert timeline["post_relevant_search_calls"] == 1
+    assert json.loads(json.dumps(timeline))["task_id"] == "task-a"
+
+
+def test_ci_observation_excludes_runs_without_code_intelligence_tools():
+    tasks = [_task("with-ci"), _task("without-ci")]
+    with_ci = _result(
+        "with-ci",
+        [_event(1, "find_symbol", step=1, query="Foo")],
+        False,
+    )
+    without_ci = _result(
+        "without-ci",
+        [_event(1, "read_file", step=1, target="README.md")],
+        True,
+    )
+    report = _multi_report(tasks, [with_ci, without_ci])
+    observation = _ci_planner_observation(report, tasks)
+    assert observation["ci_used"]["task_runs"] == 1
+    assert observation["ci_used"]["success_rate"] == 0.0
+    assert observation["ci_not_used"]["task_runs"] == 1
+    assert observation["ci_not_used"]["success_rate"] == 1.0
 
 
 def test_30_step_results_remain_separate_from_20_step_results():

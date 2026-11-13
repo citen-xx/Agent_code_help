@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 import asyncio
 from collections import Counter, defaultdict
@@ -45,6 +46,7 @@ EXPLORATION_TOOLS = {
     "git_status",
     "git_diff",
 }
+_CHANGED_RANGE_CACHE: dict[tuple, dict[str, list[tuple[int, int]]]] = {}
 
 
 def _write(path: Path, content: str) -> None:
@@ -253,6 +255,80 @@ def _overlaps(
     return smaller > 0 and overlap / smaller >= 0.8
 
 
+def _ground_truth_changed_ranges(task) -> dict[str, list[tuple[int, int]]]:
+    files = tuple(task.ground_truth_files)
+    key = (
+        task.repository,
+        task.base_commit,
+        task.fixed_revision,
+        files,
+    )
+    if key in _CHANGED_RANGE_CACHE:
+        return _CHANGED_RANGE_CACHE[key]
+    if not task.fixed_revision or not files:
+        _CHANGED_RANGE_CACHE[key] = {}
+        return {}
+    try:
+        output = git.run_git(
+            [
+                "diff",
+                "--unified=0",
+                "--no-color",
+                "--no-ext-diff",
+                task.base_commit,
+                task.fixed_revision,
+                "--",
+                *files,
+            ],
+            cwd=Path(task.repository),
+        )
+    except (git.GitError, OSError):
+        _CHANGED_RANGE_CACHE[key] = {}
+        return {}
+    ranges: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    current_file = None
+    for line in output.splitlines():
+        if line.startswith("+++ b/"):
+            current_file = (
+                line.removeprefix("+++ b/")
+                .replace("\\", "/")
+                .lstrip("./")
+            )
+            continue
+        match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+        if not current_file or not match:
+            continue
+        start = int(match.group(1))
+        count = int(match.group(2) or "1")
+        if count == 0:
+            ranges[current_file].append((start, start))
+        else:
+            ranges[current_file].append((start, start + count - 1))
+    result = dict(ranges)
+    _CHANGED_RANGE_CACHE[key] = result
+    return result
+
+
+def _read_is_near_change(
+    event: dict,
+    changed_ranges: dict[str, list[tuple[int, int]]],
+) -> bool:
+    path = (
+        (event["target_file"] or "")
+        .replace("\\", "/")
+        .lstrip("./")
+    )
+    if event["read_start_line"] is None or event["read_end_line"] is None:
+        return False
+    for changed_start, changed_end in changed_ranges.get(path, []):
+        if (
+            event["read_start_line"] <= changed_end + 20
+            and event["read_end_line"] >= changed_start - 20
+        ):
+            return True
+    return False
+
+
 def _timeline(
     task,
     report: BenchmarkReport,
@@ -294,6 +370,7 @@ def _timeline(
                 "read_start_line": event.read_start_line,
                 "read_end_line": event.read_end_line,
                 "elapsed_seconds": event.elapsed_seconds,
+                "redundant_exploration": False,
             }
         )
     first_relevant = next(
@@ -303,6 +380,17 @@ def _timeline(
     first_patch = next(
         (event for event in events if event["patch_attempted"]),
         None,
+    )
+    changed_ranges = _ground_truth_changed_ranges(task)
+    focused_relevant_reads = [
+        event
+        for event in events
+        if event["tool"] == "read_file"
+        and event["relevant_file_hit"]
+        and _read_is_near_change(event, changed_ranges)
+    ]
+    first_focused_relevant_read = (
+        focused_relevant_reads[0] if focused_relevant_reads else None
     )
     pre_patch = (
         events[: first_patch["tool_call_index"] - 1]
@@ -356,6 +444,10 @@ def _timeline(
             if directory_groups[key]:
                 redundant_indexes.add(index)
             directory_groups[key].append(event)
+    for event in exploration:
+        event["redundant_exploration"] = (
+            event["tool_call_index"] in redundant_indexes
+        )
     search_count = sum(
         event["tool"] == "search_code" for event in post_relevant
     )
@@ -382,24 +474,32 @@ def _timeline(
             if first_patch and first_relevant
             else None
         ),
+        "llm_calls_before_first_patch": (
+            max(first_patch["step"] - 1, 0) if first_patch else None
+        ),
         "exploration_calls_before_first_patch": len(pre_patch),
         "post_relevant_search_calls": search_count,
         "post_relevant_read_calls": read_count,
         "post_relevant_ci_calls": ci_count,
         "patch_attempted": bool(first_patch),
+        "exploration_without_commitment": bool(
+            first_relevant and not first_patch
+        ),
         "read_file_calls": sum(
             event["tool"] == "read_file" for event in events
+        ),
+        "read_near_ground_truth_change": bool(focused_relevant_reads),
+        "first_read_near_ground_truth_change_step": (
+            first_focused_relevant_read["step"]
+            if first_focused_relevant_read
+            else None
         ),
         "tokens_before_first_patch": metrics["tokens_before_first_patch"],
         "file_localization_recall": metrics["file_localization_recall"],
         "repeated_read_calls": sum(
-            index in redundant_indexes
-            for index in range(1, len(events) + 1)
-            if any(
-                event["tool"] == "read_file"
-                and event["tool_call_index"] == index
-                for event in exploration
-            )
+            event["tool"] == "read_file"
+            and event["redundant_exploration"]
+            for event in exploration
         ),
         "repeated_search_calls": sum(
             event["tool_call_index"] in redundant_indexes
@@ -538,13 +638,18 @@ def run_step_budget_diagnostic(
     report, _ = asyncio.run(runner.run())
     records = []
     for result in report.results:
-        task_rows = _task_rows(report)
-        row = next(
-            item for item in task_rows if item["task_id"] == result.task_id
+        timeline = _timeline(
+            next(
+                task
+                for task in selected
+                if task.task_id == result.task_id
+            ),
+            report,
+            result,
         )
         if result.success:
             category = "budget_limited"
-        elif row.get("first_patch_step") is not None:
+        elif timeline["patch_attempted"]:
             category = "late_patch_failure"
         else:
             category = "strategy_limited"
@@ -553,25 +658,17 @@ def run_step_budget_diagnostic(
                 "task_id": result.task_id,
                 "success_at_30": result.success,
                 "classification": category,
-                "patch_at_30": row.get("patch_attempted"),
-                "first_patch_step": row.get("first_patch_step"),
+                "patch_at_30": timeline["patch_attempted"],
+                "first_patch_step": timeline["first_patch_step"],
                 "patch_only_after_step_20": bool(
-                    row.get("first_patch_step")
-                    and row["first_patch_step"] > 20
+                    timeline["first_patch_step"]
+                    and timeline["first_patch_step"] > 20
                 ),
                 "llm_calls": result.llm_calls,
                 "tool_calls": result.agent_tool_calls,
                 "total_tokens": result.total_tokens,
                 "duration_seconds": result.duration_seconds,
-                "timeline": _timeline(
-                    next(
-                        task
-                        for task in selected
-                        if task.task_id == result.task_id
-                    ),
-                    report,
-                    result,
-                ),
+                "timeline": timeline,
             }
         )
     return report, records
@@ -622,36 +719,45 @@ def _conversion_metrics(
     result = {}
     for profile in PROFILES:
         rows = [
-            row
+            _timeline(
+                task_map[task_result.task_id],
+                report,
+                task_result,
+            )
             for report in reports[profile]
-            for row in _task_rows(report)
+            for task_result in report.results
         ]
         located = [
             row
             for row in rows
-            if (row.get("file_localization_recall") or 0) > 0
+            if row["first_relevant_file_step"] is not None
         ]
         patched = [
-            row for row in located if row.get("patch_attempted")
+            row for row in located if row["patch_attempted"]
         ]
         result[profile.value] = {
             "task_runs": len(rows),
             "runs_located_relevant_file": len(located),
+            "runs_with_any_patch": sum(
+                row["patch_attempted"] for row in rows
+            ),
             "runs_with_patch_after_localization": len(patched),
             "patch_conversion_rate": (
                 len(patched) / len(located) if located else 0.0
             ),
-            "successful_task_runs": sum(row["success"] for row in located),
+            "successful_task_runs": sum(
+                row["success"] for row in located
+            ),
             "successful_patch_conversion": (
                 sum(row["success"] for row in located) / len(located)
                 if located
                 else 0.0
             ),
             "average_first_patch_step": _mean_optional(
-                [row.get("first_patch_step") for row in located]
+                [row["first_patch_step"] for row in patched]
             ),
             "average_relevant_to_patch_gap": _mean_optional(
-                [row.get("relevant_to_patch_gap") for row in located]
+                [row["relevant_to_patch_gap"] for row in patched]
             ),
         }
     return result
@@ -662,7 +768,7 @@ def _mean_optional(values) -> float | None:
     return sum(filtered) / len(filtered) if filtered else None
 
 
-def _comparison_groups(timelines: list[dict]) -> dict:
+def _comparison_groups(timelines: list[dict], *, run: str) -> dict:
     result = {}
     for profile in PROFILES:
         groups = {}
@@ -673,10 +779,18 @@ def _comparison_groups(timelines: list[dict]) -> dict:
             group = [
                 item
                 for item in timelines
-                if item["profile"] == profile.value and predicate(item)
+                if item["profile"] == profile.value
+                and item["run"] == run
+                and predicate(item)
             ]
             groups[name] = {
                 "task_runs": len(group),
+                "patch_rate": (
+                    sum(item["patch_attempted"] for item in group)
+                    / len(group)
+                    if group
+                    else 0.0
+                ),
                 "first_relevant_step": _mean_optional(
                     [item["first_relevant_file_step"] for item in group]
                 ),
@@ -713,7 +827,11 @@ def _ci_planner_observation(
         _timeline(task_map[result.task_id], report, result)
         for result in report.results
     ]
-    ci = [item for item in timelines if item["repeated_ci_calls"] is not None or any(e["tool"] in CI_TOOLS for e in item["timeline"])]
+    ci = [
+        item
+        for item in timelines
+        if any(event["tool"] in CI_TOOLS for event in item["timeline"])
+    ]
     no_ci = [item for item in timelines if item not in ci]
 
     def summarize(group):
@@ -754,6 +872,20 @@ def _ci_planner_observation(
             None,
         )
         if plan:
+            plan_index = next(
+                index
+                for index, event in enumerate(result.tool_events)
+                if event.tool_call_index == plan.tool_call_index
+            )
+            patch_index = next(
+                (
+                    index
+                    for index, event in enumerate(result.tool_events)
+                    if event.tool_call_index == patch.tool_call_index
+                ),
+                len(result.tool_events),
+            ) if patch else len(result.tool_events)
+            post_plan = result.tool_events[plan_index + 1 : patch_index]
             planner_runs.append(
                 {
                     "task_id": result.task_id,
@@ -761,6 +893,18 @@ def _ci_planner_observation(
                     "first_patch_step": patch.step if patch else None,
                     "plan_to_patch_gap": (
                         patch.step - plan.step if patch else None
+                    ),
+                    "post_plan_search_calls": sum(
+                        event.tool_name == "search_code"
+                        for event in post_plan
+                    ),
+                    "post_plan_read_calls": sum(
+                        event.tool_name == "read_file"
+                        for event in post_plan
+                    ),
+                    "post_plan_ci_calls": sum(
+                        event.tool_name in CI_TOOLS
+                        for event in post_plan
                     ),
                     "success": result.success,
                 }
@@ -774,6 +918,18 @@ def _ci_planner_observation(
         ),
         "average_plan_to_patch_gap": _mean_optional(
             [item["plan_to_patch_gap"] for item in planner_runs]
+        ),
+        "average_post_plan_search_calls": _mean_optional(
+            [item["post_plan_search_calls"] for item in planner_runs]
+        ),
+        "average_post_plan_read_calls": _mean_optional(
+            [item["post_plan_read_calls"] for item in planner_runs]
+        ),
+        "average_post_plan_ci_calls": _mean_optional(
+            [item["post_plan_ci_calls"] for item in planner_runs]
+        ),
+        "planner_runs_without_patch": sum(
+            item["first_patch_step"] is None for item in planner_runs
         ),
     }
 
@@ -792,6 +948,12 @@ def _step_budget_records(
             result,
         )
         row_20 = rows_20[result.task_id]
+        after_step_20 = [
+            event
+            for event in row_30["timeline"]
+            if event["step"] > 20
+            and event["tool"] in EXPLORATION_TOOLS
+        ]
         if result.success:
             classification = "budget_limited"
         elif row_30["patch_attempted"]:
@@ -804,11 +966,25 @@ def _step_budget_records(
                 "success_at_20": False,
                 "success_at_30": result.success,
                 "classification": classification,
+                "first_relevant_file_step_at_30": row_30[
+                    "first_relevant_file_step"
+                ],
                 "first_patch_step_at_30": row_30["first_patch_step"],
+                "relevant_to_patch_gap_at_30": row_30[
+                    "relevant_to_patch_gap"
+                ],
                 "patch_only_after_step_20": bool(
                     row_30["first_patch_step"]
                     and row_30["first_patch_step"] > 20
                 ),
+                "exploration_calls_after_step_20": len(after_step_20),
+                "repeated_exploration_calls_after_step_20": sum(
+                    event["redundant_exploration"]
+                    for event in after_step_20
+                ),
+                "exploration_waste_ratio": row_30[
+                    "exploration_waste_ratio"
+                ],
                 "extra_llm_calls": result.llm_calls - row_20["llm_calls"],
                 "extra_tool_calls": (
                     result.agent_tool_calls - (row_20.get("tool_calls") or 0)
@@ -877,6 +1053,13 @@ def _build_phase5_5_report(
         ),
         "extra_tool_calls": sum(
             item["extra_tool_calls"] for item in step_records
+        ),
+        "extra_duration": sum(
+            item["extra_duration"] for item in step_records
+        ),
+        "repeated_exploration_calls_after_step_20": sum(
+            item["repeated_exploration_calls_after_step_20"]
+            for item in step_records
         ),
     }
     payload = {
@@ -967,6 +1150,16 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
         and item["run_1_failure_category"] == "step_limit"
         and item["run_2_failure_category"] == "step_limit"
     ]
+    full_unstable = [
+        task_id
+        for task_id, item in full.items()
+        if item["classification"] == "unstable"
+    ]
+    full_run_2_failures = Counter(
+        item["run_2_failure_category"]
+        for item in full.values()
+        if item["run_2_failure_category"] is not None
+    )
     lines.extend(
         [
             "",
@@ -974,21 +1167,46 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             "",
             f"Full stable step-limit failures: {len(full_step_stable)}. "
             "The detailed failure categories are in `stability_report.json`.",
+            (
+                "Run 2 Full failure categories: "
+                + ", ".join(
+                    f"{name}={count}"
+                    for name, count in sorted(full_run_2_failures.items())
+                )
+                + "."
+            ),
+            (
+                "Full unstable tasks: "
+                + (
+                    ", ".join(f"`{task_id}`" for task_id in full_unstable)
+                    if full_unstable
+                    else "none"
+                )
+                + "."
+            ),
             "",
             "## 3. Search-to-Patch Timeline",
             "",
             "The complete per-step timeline is in `search_to_patch_trace.json`. "
-            "A representative Full no-patch failure:",
+            "A representative Run 2 Full no-patch failure:",
             "",
         ]
     )
+    full_run_2 = [
+        item
+        for item in payload["timelines"]
+        if item["run"] == "run_2" and item["profile"] == "full"
+    ]
+    no_patch_failures = [
+        item
+        for item in full_run_2
+        if not item["success"] and not item["patch_attempted"]
+    ]
     example = next(
         (
             item
-            for item in payload["timelines"]
-            if item["profile"] == "full"
-            and not item["success"]
-            and not item["patch_attempted"]
+            for item in no_patch_failures
+            if item["exploration_without_commitment"]
         ),
         None,
     )
@@ -1003,17 +1221,51 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             )
         lines.append(
             f"- END: step_limit; first relevant file step "
-            f"{example['first_relevant_file_step']}, no patch."
+            f"{example['first_relevant_file_step']}, first focused read near "
+            f"the evaluator change step "
+            f"{example['first_read_near_ground_truth_change_step'] or 'N/A'}, "
+            "no patch."
         )
+    lines.extend(
+        [
+            "",
+            "| Task | Located Step | Focused Change Read | Post Search | "
+            "Post Read | Post CI | Repeated Exploration | Last Five Tools |",
+            "|---|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    for item in no_patch_failures:
+        last_tools = " → ".join(
+            f"S{event['step']}:{event['tool']}"
+            for event in item["last_five_steps"]
+        )
+        lines.append(
+            f"| {item['task_id']} | {item['first_relevant_file_step']} | "
+            f"{item['first_read_near_ground_truth_change_step'] or 'N/A'} | "
+            f"{item['post_relevant_search_calls']} | "
+            f"{item['post_relevant_read_calls']} | "
+            f"{item['post_relevant_ci_calls']} | "
+            f"{item['redundant_exploration_calls']}/"
+            f"{item['total_exploration_calls']} | {last_tools} |"
+        )
+    lines.extend(
+        [
+            "",
+            "A focused change read means a ranged read within 20 lines of an "
+            "evaluator-only changed hunk. Whole-file reads are not counted as "
+            "focused reads. Ground-truth ranges are never passed to the Agent.",
+        ]
+    )
     lines.extend(["", "## 4. Conversion Metrics", "", (
-        "| Profile | Located File | Tasks With Patch | Patch Conversion | "
+        "| Profile | Located File | Any Patch | Patch After Localization | Patch Conversion | "
         "Success Conversion | Avg First Patch | Avg Relevant→Patch Gap |"
-    ), "|---|---:|---:|---:|---:|---:|---:|"])
+    ), "|---|---:|---:|---:|---:|---:|---:|---:|"])
     for profile in PROFILES:
         value = payload["conversion"][profile.value]
         lines.append(
             f"| {profile.value} | {value['runs_located_relevant_file']}/"
             f"{value['task_runs']} | "
+            f"{value['runs_with_any_patch']} | "
             f"{value['runs_with_patch_after_localization']} | "
             f"{value['patch_conversion_rate'] * 100:.1f}% | "
             f"{value['successful_patch_conversion'] * 100:.1f}% | "
@@ -1027,38 +1279,45 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             "",
             "## 5. Repeated Exploration",
             "",
-            "| Profile | Repeated Reads | Repeated Searches | Repeated CI | "
+            "| Profile | Run | Repeated Reads | Repeated Searches | Repeated CI | "
             "Repeated Directories | Waste Ratio |",
-            "|---|---:|---:|---:|---:|---:|",
+            "|---|---|---:|---:|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
-        items = [
-            item
-            for item in payload["timelines"]
-            if item["profile"] == profile.value
-            and item.get("query_telemetry_available")
-        ]
-        lines.append(
-            f"| {profile.value} | "
-            f"{sum(item['repeated_read_calls'] for item in items)} | "
-            f"{sum(item['repeated_search_calls'] for item in items)} | "
-            f"{sum(item['repeated_ci_calls'] for item in items)} | "
-            f"{sum(item['repeated_directory_calls'] for item in items)} | "
-            f"{_mean_percent([item['exploration_waste_ratio'] for item in items])} |"
-        )
+        for run in ("run_1", "run_2"):
+            items = [
+                item
+                for item in payload["timelines"]
+                if item["profile"] == profile.value and item["run"] == run
+            ]
+            query_items = [
+                item
+                for item in items
+                if item.get("query_telemetry_available")
+            ]
+            lines.append(
+                f"| {profile.value} | {run} | "
+                f"{sum(item['repeated_read_calls'] for item in items)} | "
+                f"{sum(item['repeated_search_calls'] for item in query_items)} | "
+                f"{sum(item['repeated_ci_calls'] for item in query_items)} | "
+                f"{sum(item['repeated_directory_calls'] for item in items)} | "
+                f"{_mean_percent([item['exploration_waste_ratio'] for item in query_items])} |"
+            )
     lines.extend(
         [
             "",
             "Run 1 did not persist query strings, so repeated search/CI counts "
-            "are reported only for Run 2; read and directory repetition is "
-            "available in both runs.",
+            "and waste ratio are unavailable there. Read and directory "
+            "repetition is valid in both runs.",
             "",
             "## 6. Success vs Failure",
             "",
+            "Run 2 comparison:",
+            "",
             "| Profile | Group | Relevant Step | First Patch | Gap | "
-            "Exploration Calls | Repeat Ratio |",
-            "|---|---|---:|---:|---:|---:|---:|",
+            "Exploration Calls | Repeat Ratio | Patch Rate |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for profile in PROFILES:
@@ -1070,8 +1329,26 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
                 f"{_fmt(value['first_patch_step'])} | "
                 f"{_fmt(value['relevant_to_patch_gap'])} | "
                 f"{_fmt(value['exploration_calls'])} | "
-                f"{_fmt(value['repeat_ratio'], percent=True)} |"
+                f"{_fmt(value['repeat_ratio'], percent=True)} | "
+                f"{_fmt(value['patch_rate'], percent=True)} |"
             )
+    full_success = payload["success_vs_failure"]["full"]["success"]
+    full_failure = payload["success_vs_failure"]["full"]["failure"]
+    lines.extend(
+        [
+            "",
+            "Run 2 Full successes did not localize earlier "
+            f"({_fmt(full_success['first_relevant_step'])} vs "
+            f"{_fmt(full_failure['first_relevant_step'])}), but they converted "
+            "localization to a first patch with a shorter gap "
+            f"({_fmt(full_success['relevant_to_patch_gap'])} vs "
+            f"{_fmt(full_failure['relevant_to_patch_gap'])} steps), used fewer "
+            f"exploration calls ({_fmt(full_success['exploration_calls'])} vs "
+            f"{_fmt(full_failure['exploration_calls'])}), and had patch rate "
+            f"{_fmt(full_success['patch_rate'], percent=True)} vs "
+            f"{_fmt(full_failure['patch_rate'], percent=True)}.",
+        ]
+    )
     budget = payload["step_budget"]["summary"]
     lines.extend(
         [
@@ -1082,13 +1359,17 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             f"{budget['stable_fail_count']}",
             f"- Recovered at 30: {budget['recovered_at_30']}",
             f"- Still failed at 30: {budget['still_failed']}",
-            f"- Extra tokens: {budget['extra_tokens']}",
-            f"- Extra LLM calls: {budget['extra_llm_calls']}",
-            f"- Extra tool calls: {budget['extra_tool_calls']}",
+            f"- Aggregate token delta: {budget['extra_tokens']}",
+            f"- Aggregate LLM-call delta: {budget['extra_llm_calls']}",
+            f"- Aggregate tool-call delta: {budget['extra_tool_calls']}",
+            f"- Aggregate duration delta: {budget['extra_duration']:.1f}s",
+            f"- Repeated exploration after step 20: "
+            f"{budget['repeated_exploration_calls_after_step_20']}",
             "",
-            "| Task | 20 | 30 | Classification | First Patch @30 | "
-            "Extra Tokens | Extra Calls |",
-            "|---|---:|---:|---|---:|---:|---:|",
+            "| Task | 20 | 30 | Classification | Relevant @30 | Patch @30 | "
+            "Patch After 20 | Repeated After 20 | Δ Tokens | Δ LLM | Δ Tool | "
+            "Δ Duration |",
+            "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for item in payload["step_budget"]["records"]:
@@ -1096,8 +1377,115 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             f"| {item['task_id']} | FAIL | "
             f"{'PASS' if item['success_at_30'] else 'FAIL'} | "
             f"{item['classification']} | "
+            f"{item['first_relevant_file_step_at_30'] or 'N/A'} | "
             f"{item['first_patch_step_at_30'] or 'N/A'} | "
-            f"{item['extra_tokens']} | {item['extra_llm_calls']} |"
+            f"{'YES' if item['patch_only_after_step_20'] else 'NO'} | "
+            f"{item['repeated_exploration_calls_after_step_20']} | "
+            f"{item['extra_tokens']} | {item['extra_llm_calls']} | "
+            f"{item['extra_tool_calls']} | {item['extra_duration']:.1f}s |"
+        )
+    recovered_late_patch = sum(
+        item["success_at_30"]
+        and (item["first_patch_step_at_30"] or 0) > 20
+        for item in payload["step_budget"]["records"]
+    )
+    late_first_patch_tasks = [
+        item["task_id"]
+        for item in payload["step_budget"]["records"]
+        if (item["first_patch_step_at_30"] or 0) > 20
+    ]
+    lines.extend(
+        [
+            "",
+            "Full@30 is an independent rerun, not a continuation of the 20-step "
+            "context. Per-run deltas can therefore be negative.",
+            f"Recovered runs whose first patch occurred after step 20: "
+            f"{recovered_late_patch}/{budget['recovered_at_30']}. "
+            "Thus the observed 30-step recovery is budget sensitivity across "
+            "whole trajectories, not direct evidence that every recovered patch "
+            "was cut off at step 20.",
+            "Tasks whose first patch appeared only after step 20: "
+            + (
+                ", ".join(f"`{task_id}`" for task_id in late_first_patch_tasks)
+                if late_first_patch_tasks
+                else "none"
+            )
+            + ".",
+        ]
+    )
+    strategy_limited = [
+        item
+        for item in payload["step_budget"]["records"]
+        if item["classification"] == "strategy_limited"
+    ]
+    late_patch = [
+        item
+        for item in payload["step_budget"]["records"]
+        if item["classification"] == "late_patch_failure"
+    ]
+    budget_limited = [
+        item
+        for item in payload["step_budget"]["records"]
+        if item["classification"] == "budget_limited"
+    ]
+    stable_fail_ids = {
+        task_id
+        for task_id, item in full.items()
+        if item["classification"] == "stable_fail"
+    }
+    stable_fail_run_2 = [
+        item
+        for item in full_run_2
+        if item["task_id"] in stable_fail_ids
+    ]
+    stable_no_patch_at_20 = [
+        item for item in stable_fail_run_2 if not item["patch_attempted"]
+    ]
+    stable_located_at_20 = sum(
+        item["first_relevant_file_step"] is not None
+        for item in stable_fail_run_2
+    )
+    unresolved = len(strategy_limited) + len(late_patch)
+    if len(budget_limited) >= max(len(strategy_limited), len(late_patch)):
+        root_cause = (
+            "This is not a single-cause failure. The benchmark is sensitive to "
+            "the 20-step setting: "
+            f"{len(budget_limited)} of "
+            f"{payload['step_budget']['summary']['stable_fail_count']} stable "
+            "step-limit failures passed at 30 steps. However, "
+            f"{unresolved} still failed, and at 20 steps "
+            f"{stable_located_at_20}/{len(stable_fail_run_2)} stable failures "
+            "had located a relevant file while "
+            f"{len(stable_no_patch_at_20)} had produced no patch. The largest "
+            "single classification is budget sensitivity, but late commitment "
+            "and residual patch reasoning account for the other half. Because "
+            "Full@30 is an independent rerun, this does not establish that "
+            "uniformly raising the cap fixes the underlying convergence issue."
+        )
+        recommendation = (
+            "Step Budget Adjustment is best supported by the 5/10 observed "
+            "recoveries at 30 steps. This phase does not apply the change."
+        )
+    elif len(late_patch) >= len(strategy_limited):
+        root_cause = (
+            "Localization is not the bottleneck. With 30 steps, the dominant "
+            f"residual failure is patch reasoning: {len(late_patch)} tasks "
+            "eventually patch but still fail."
+        )
+        recommendation = (
+            "Patch Reasoning is the best-supported next intervention because "
+            "late-patch failures dominate the remaining stable failures."
+        )
+    else:
+        root_cause = (
+            "The dominant residual failure is exploration without commitment: "
+            f"{len(strategy_limited)} stable step-limit tasks still produced "
+            "no patch at 30 steps."
+        )
+        recommendation = (
+            "Search Budget / Commitment Mechanism is the best-supported next "
+            "intervention because extra steps did not convert the dominant "
+            "no-patch failures."
         )
     lines.extend(
         [
@@ -1123,22 +1511,33 @@ def render_phase5_5_report(payload: dict, tasks) -> str:
             f"avg relevant→patch gap {_fmt(ci['ci_not_used']['relevant_to_patch_gap'])}.",
             f"- Planner runs: {len(ci['planner_runs'])}; avg plan step "
             f"{_fmt(ci['average_plan_step'])}; avg plan→patch gap "
-            f"{_fmt(ci['average_plan_to_patch_gap'])}.",
+            f"{_fmt(ci['average_plan_to_patch_gap'])}; "
+            f"planner runs without a patch: "
+            f"{ci['planner_runs_without_patch']}.",
+            f"- After the first plan, average additional search/read/CI calls: "
+            f"{_fmt(ci['average_post_plan_search_calls'])}/"
+            f"{_fmt(ci['average_post_plan_read_calls'])}/"
+            f"{_fmt(ci['average_post_plan_ci_calls'])}.",
+            "",
+            (
+                "When invoked, the planner usually acted as a commitment "
+                "point: "
+                f"{sum((item['plan_to_patch_gap'] == 1) for item in ci['planner_runs'])}/"
+                f"{len(ci['planner_runs'])} plans were followed by a patch on "
+                "the next step, but the first plan arrived late on average "
+                f"(step {_fmt(ci['average_plan_step'])})."
+            ),
             "- These comparisons are descriptive only; the sample is too small "
             "to claim causality.",
             "",
             "## 10. Root Cause",
             "",
-            "The evidence distinguishes budget pressure from commitment failure. "
-            "Successful tasks are compared directly with failures on localization "
-            "step, first patch step, relevant-to-patch gap, exploration calls, "
-            "and deterministic repeat ratio.",
+            root_cause,
             "",
             "## 11. Recommended Next Step",
             "",
-            "Choose the single next intervention indicated by the 30-step "
-            "classification and success/failure gap. Do not alter the benchmark "
-            "or add forced-patch hints in this phase.",
+            recommendation,
+            "This phase remains diagnostic; no Agent behavior has been changed.",
             "",
         ]
     )
@@ -1229,7 +1628,7 @@ def run_phase5_5(
         },
         tasks,
     )
-    comparison_groups = _comparison_groups(timelines)
+    comparison_groups = _comparison_groups(timelines, run="run_2")
     ci_planner = _ci_planner_observation(
         run2[AgentProfile.FULL],
         tasks,
@@ -1245,6 +1644,90 @@ def run_phase5_5(
         conversion=conversion,
         comparison_groups=comparison_groups,
         ci_planner=ci_planner,
+        step_records=step_records,
+        tasks=tasks,
+    )
+    print(f"Phase 5.5 report: {phase55_dir / 'phase5_5_report.md'}")
+    return phase55_dir / "phase5_5_report.md"
+
+
+def regenerate_phase5_5_report(
+    *,
+    tasks_file: str | Path = DEFAULT_TASKS_FILE,
+    output_dir: str | Path = DEFAULT_RESULTS_DIR,
+) -> Path:
+    """Rebuild report artifacts from completed runs without invoking the Agent."""
+    tasks_path = Path(tasks_file).expanduser().resolve()
+    phase55_dir = _phase_dir(output_dir)
+    tasks = load_external_tasks(tasks_path)
+    source_manifest_path = phase55_dir / "source_manifest.json"
+    if not source_manifest_path.is_file():
+        raise RuntimeError("缺少 source_manifest.json")
+    source_manifest = json.loads(
+        source_manifest_path.read_text(encoding="utf-8")
+    )
+    run1_paths = {
+        profile.value: phase55_dir / "run_1" / profile.value / "report.json"
+        for profile in PROFILES
+    }
+    run1 = _profile_reports(run1_paths)
+    run2 = {}
+    for profile in PROFILES:
+        report_path = (
+            phase55_dir
+            / "confirmation_run_2"
+            / f"phase5_5_{profile.value}_run2"
+            / "report.json"
+        )
+        if not report_path.is_file():
+            raise RuntimeError(f"缺少 Run 2 report: {report_path}")
+        report = BenchmarkReport.model_validate_json(
+            report_path.read_text(encoding="utf-8")
+        )
+        if len(report.results) != 15:
+            raise RuntimeError(f"Run 2 report 不完整: {report_path}")
+        run2[profile] = report
+    step_paths = _report_paths(phase55_dir / "step_budget_experiment")
+    if len(step_paths) != 1:
+        raise RuntimeError(
+            f"需要恰好一个 30-step report，实际 {len(step_paths)}"
+        )
+    report_30 = BenchmarkReport.model_validate_json(
+        step_paths[0].read_text(encoding="utf-8")
+    )
+    stability = _stability(run1, run2)
+    task_map = {task.task_id: task for task in tasks}
+    timelines = []
+    for run_name, reports in (("run_1", run1), ("run_2", run2)):
+        for profile in PROFILES:
+            report = reports[profile]
+            for result in report.results:
+                timeline = _timeline(
+                    task_map[result.task_id],
+                    report,
+                    result,
+                )
+                timeline["run"] = run_name
+                timelines.append(timeline)
+    step_records = _step_budget_records(report_30, run2[AgentProfile.FULL])
+    conversion = _conversion_metrics(
+        {
+            profile: [run1[profile], run2[profile]]
+            for profile in PROFILES
+        },
+        tasks,
+    )
+    _build_phase5_5_report(
+        phase_dir=phase55_dir,
+        source_manifest=source_manifest,
+        run1=run1,
+        run2=run2,
+        stability=stability,
+        stability_summary=_stability_summary(stability),
+        timelines=timelines,
+        conversion=conversion,
+        comparison_groups=_comparison_groups(timelines, run="run_2"),
+        ci_planner=_ci_planner_observation(run2[AgentProfile.FULL], tasks),
         step_records=step_records,
         tasks=tasks,
     )

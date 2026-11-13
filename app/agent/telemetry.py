@@ -14,6 +14,7 @@ class ToolEvent(BaseModel):
     tool_name: str
     call_id: str | None = None
     target_file: str | None = None
+    query: str | None = None
     success: bool
     invoked: bool = False
     error_category: PatchFailureCategory | None = None

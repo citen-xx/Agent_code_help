@@ -144,6 +144,22 @@ def _target_file(tool_name: str, arguments: dict) -> str | None:
     return None
 
 
+def _tool_query(tool_name: str, arguments: dict) -> str | None:
+    for key in (
+        "query",
+        "symbol",
+        "name",
+        "file",
+        "path",
+        "class_name",
+        "method",
+    ):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _result_files(payload: dict | None) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -287,6 +303,7 @@ def _tool_event(
         tool_name=tool_name,
         call_id=call_id,
         target_file=target_file,
+        query=_tool_query(tool_name, arguments),
         success=success,
         invoked=invoked,
         error_category=category,

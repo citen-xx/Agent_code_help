@@ -74,6 +74,7 @@ class BenchmarkRunner:
         model_name: str | None = None,
         profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
         context_lifecycle_compaction: bool = False,
+        max_steps: int = 20,
     ):
         self.tasks = tasks
         self.output_dir = Path(output_dir)
@@ -89,6 +90,7 @@ class BenchmarkRunner:
         self.profile = resolve_profile(profile)
         self.capabilities = capabilities_for(self.profile)
         self.context_lifecycle_compaction = context_lifecycle_compaction
+        self.max_steps = max_steps
         self.started_at = datetime.now(timezone.utc).isoformat()
         try:
             self.git_commit = git.head_commit(PROJECT_ROOT)
@@ -122,6 +124,7 @@ class BenchmarkRunner:
             profile=self.profile,
             context_lifecycle_compaction=self.context_lifecycle_compaction,
             test_runner=self.test_runner,
+            max_steps=self.max_steps,
         )
         return AgentRunOutput(
             response=response,

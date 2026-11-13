@@ -604,6 +604,17 @@ uv run python -m app.evaluation realworld-report
 
 结果写入 `evaluation/results/phase5_real_world/`。
 
+Phase 5.5 reruns the frozen benchmark, records per-step Search-to-Patch
+timelines, and runs a separately reported 30-step diagnostic only for stable
+Full step-limit failures.
+
+```bash
+uv run python -m app.evaluation phase5-5
+```
+
+结果写入 `evaluation/results/phase5_5_search_to_patch/`，不会污染
+`Full@20` 的正式成绩。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

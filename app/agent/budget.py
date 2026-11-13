@@ -11,6 +11,9 @@ class StepBudgetPolicyName(StrEnum):
     ADAPTIVE_20_30 = "adaptive_20_30"
 
 
+DEFAULT_PRODUCTION_BUDGET = StepBudgetPolicyName.ADAPTIVE_20_30
+
+
 class BudgetProgress(BaseModel):
     """Runtime-visible progress only; evaluator ground truth is excluded."""
 
@@ -230,3 +233,10 @@ def create_step_budget_policy(
             name=StepBudgetPolicyName.FIXED_30,
         )
     return AdaptiveStepBudgetPolicy()
+
+
+def production_step_budget_name(max_steps: int) -> str:
+    """Use Adaptive for the production default and fixed custom limits in tests."""
+    if max_steps == 20:
+        return DEFAULT_PRODUCTION_BUDGET.value
+    return f"fixed_{max_steps}"

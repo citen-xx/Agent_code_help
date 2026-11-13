@@ -52,6 +52,7 @@ from app.agent.budget import (
     StepBudgetPolicyName,
     StepBudgetTelemetry,
     create_step_budget_policy,
+    production_step_budget_name,
 )
 from app.agent.context_lifecycle import compact_model_messages
 from app.agent.state import AgentState
@@ -640,7 +641,7 @@ def build_agent_graph(
     """Build the compiled agent graph: LLM <-> tools until a final answer."""
     tools_by_name = {tool.name: tool for tool in tools}
     budget_policy = step_budget_policy or create_step_budget_policy(
-        f"fixed_{max_steps}",
+        production_step_budget_name(max_steps),
         legacy_max_steps=max_steps,
     )
 
@@ -1091,7 +1092,7 @@ async def run_agent(
         step_budget_policy
         if isinstance(step_budget_policy, StepBudgetPolicy)
         else create_step_budget_policy(
-            step_budget_policy or f"fixed_{max_steps}",
+            step_budget_policy or production_step_budget_name(max_steps),
             legacy_max_steps=max_steps,
         )
     )

@@ -5,6 +5,7 @@ from app.agent.budget import (
     StepBudgetTelemetry,
     StepBudgetPolicyName,
     create_step_budget_policy,
+    production_step_budget_name,
 )
 
 
@@ -167,3 +168,8 @@ def test_fixed_policies_share_interface():
     assert fixed20.should_extend(_progress()).extend is False
     assert fixed30.base_step_limit == 30
     assert fixed30.hard_step_limit == 30
+
+
+def test_production_default_is_adaptive_with_legacy_test_limits():
+    assert production_step_budget_name(20) == "adaptive_20_30"
+    assert production_step_budget_name(3) == "fixed_3"

@@ -20,6 +20,7 @@ from app.agent.capabilities import (
 from app.agent.budget import (
     StepBudgetPolicy,
     create_step_budget_policy,
+    production_step_budget_name,
 )
 from app.agent.graph import run_agent
 from app.core.config import settings
@@ -100,7 +101,7 @@ class BenchmarkRunner:
             step_budget_policy
             if isinstance(step_budget_policy, StepBudgetPolicy)
             else create_step_budget_policy(
-                step_budget_policy or f"fixed_{max_steps}",
+                step_budget_policy or production_step_budget_name(max_steps),
                 legacy_max_steps=max_steps,
             )
         )

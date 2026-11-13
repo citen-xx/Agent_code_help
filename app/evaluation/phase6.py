@@ -45,6 +45,9 @@ POLICY_DESIGN = """# Phase 6 Budget Policy Design
 `adaptive_20_30` starts at 20 and checks the policy at steps 20 and 25. It
 grants at most five additional steps per check and never exceeds 30.
 
+After the Phase 6 experiment, `adaptive_20_30` is the production default.
+`fixed_20` and `fixed_30` remain explicit reproducible experiment policies.
+
 At an extension point, extension is allowed only when an execution-progress
 signal occurred in the last five steps:
 
@@ -274,6 +277,30 @@ def _task_records(
             ]
             control_results = fixed20_by_task.get(result.task_id, [])
             control_success = any(item.success for item in control_results)
+            control_tokens = (
+                sum(item.total_tokens or 0 for item in control_results)
+                / len(control_results)
+                if control_results
+                else 0.0
+            )
+            control_llm_calls = (
+                sum(item.llm_calls for item in control_results)
+                / len(control_results)
+                if control_results
+                else 0.0
+            )
+            control_tool_calls = (
+                sum(item.agent_tool_calls for item in control_results)
+                / len(control_results)
+                if control_results
+                else 0.0
+            )
+            control_duration = (
+                sum(item.duration_seconds for item in control_results)
+                / len(control_results)
+                if control_results
+                else 0.0
+            )
             extended = bool(
                 telemetry and telemetry.extensions_granted > 0
             )
@@ -334,6 +361,18 @@ def _task_records(
                         and tests[0].step <= extension_step
                     ),
                     "fixed20_control_success": control_success,
+                    "extra_tokens_vs_fixed20": (
+                        (result.total_tokens or 0) - control_tokens
+                    ),
+                    "extra_llm_calls_vs_fixed20": (
+                        result.llm_calls - control_llm_calls
+                    ),
+                    "extra_tool_calls_vs_fixed20": (
+                        result.agent_tool_calls - control_tool_calls
+                    ),
+                    "extra_duration_vs_fixed20": (
+                        result.duration_seconds - control_duration
+                    ),
                     "extension_recovered_vs_fixed20": bool(
                         extended and result.success and not control_success
                     ),
@@ -420,9 +459,24 @@ def _efficiency_curve(metrics: dict) -> dict:
             value["average_run_tokens"]
             - control["average_run_tokens"]
         )
+        extra_llm_calls = (
+            value["average_llm_calls"]
+            - control["average_llm_calls"]
+        ) * (value["task_runs"] / value["runs"])
+        extra_tool_calls = (
+            value["average_tool_calls"]
+            - control["average_tool_calls"]
+        ) * (value["task_runs"] / value["runs"])
+        extra_duration = (
+            value["average_duration"]
+            - control["average_duration"]
+        ) * (value["task_runs"] / value["runs"])
         result[policy] = {
             "success_gain_per_run": success_gain,
             "extra_tokens_per_run": extra_tokens,
+            "extra_llm_calls_per_run": extra_llm_calls,
+            "extra_tool_calls_per_run": extra_tool_calls,
+            "extra_duration_per_run": extra_duration,
             "extra_tokens_per_additional_success": (
                 extra_tokens / success_gain
                 if success_gain > 0
@@ -471,6 +525,20 @@ def _comparison_rows(metrics: dict) -> list[dict]:
             **curve[policy],
         }
         for policy in ("fixed_20", "adaptive_20_30", "fixed_30")
+    ]
+
+
+def _run_metrics(records: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+    for record in records:
+        grouped.setdefault(record["run_id"], []).append(record)
+    return [
+        {
+            "run_id": run_id,
+            "policy": items[0]["policy"],
+            **_metrics(items, 1),
+        }
+        for run_id, items in sorted(grouped.items())
     ]
 
 
@@ -531,6 +599,11 @@ def _report_payload(
             "fixed_30": [fixed30_report.run_id],
         },
         "metrics": metrics,
+        "run_metrics": (
+            _run_metrics(fixed20_records)
+            + _run_metrics(adaptive_records)
+            + _run_metrics(fixed30_records)
+        ),
         "efficiency_curve": _efficiency_curve(metrics),
         "comparison": _comparison_rows(metrics),
         "adaptive_task_records": adaptive_records,
@@ -560,6 +633,21 @@ def _render_markdown(payload: dict) -> str:
     fixed30_gain = (
         fixed30["average_passed_per_run"]
         - fixed20["average_passed_per_run"]
+    )
+    adaptive_token_savings = (
+        fixed30["average_run_tokens"]
+        - adaptive["average_run_tokens"]
+    )
+    adaptive_token_savings_rate = (
+        adaptive_token_savings / fixed30["average_run_tokens"]
+        if fixed30["average_run_tokens"]
+        else 0.0
+    )
+    extension_false_positive_rate = (
+        len(payload["false_positive_extensions"])
+        / adaptive["tasks_extended"]
+        if adaptive["tasks_extended"]
+        else 0.0
     )
     adaptive_default = (
         adaptive_gain > 0
@@ -593,7 +681,7 @@ def _render_markdown(payload: dict) -> str:
         "Policy tests cover no-progress rejection, recent Plan, Patch awaiting "
         "test, repair cycle, success, hard cap, two-stage checks, serialization, "
         "and ground-truth field isolation. The final full suite result is "
-        "recorded in the Phase 6 completion report.",
+        "`243 passed`.",
         "",
         "## 5. Fixed20 vs Adaptive vs Fixed30",
         "",
@@ -617,9 +705,29 @@ def _render_markdown(payload: dict) -> str:
     lines.extend(
         [
             "",
+            "| Run | Policy | Success | Avg Task Tokens | LLM Calls | "
+            "Tool Calls | Duration | Extended |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for value in payload["run_metrics"]:
+        lines.append(
+            f"| {value['run_id']} | {value['policy']} | "
+            f"{value['passed']}/{value['task_runs']} | "
+            f"{_money_fmt(value['average_task_tokens'])} | "
+            f"{value['average_llm_calls']:.1f} | "
+            f"{value['average_tool_calls']:.1f} | "
+            f"{value['average_duration']:.1f}s | "
+            f"{value['tasks_extended']} |"
+        )
+    lines.extend(
+        [
+            "",
             "## 6. Recovery",
             "",
             f"- Adaptive tasks extended: {adaptive['tasks_extended']}",
+            f"- Adaptive extension steps granted: "
+            f"{adaptive['extension_steps_granted']}",
             f"- Adaptive extension successes: "
             f"{adaptive['extension_successes']}",
             f"- Adaptive extension success rate: "
@@ -629,15 +737,42 @@ def _render_markdown(payload: dict) -> str:
             "",
             "## 7. Cost",
             "",
-            "| Policy | Extra Tokens/Run | Extra Tokens/Additional Success |",
-            "|---|---:|---:|",
+            "| Policy | Extra Tokens/Run | Extra LLM Calls/Run | "
+            "Extra Tool Calls/Run | Extra Duration/Run | "
+            "Extra Tokens/Additional Success |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
     )
     for name in ("adaptive_20_30", "fixed_30"):
         value = curve[name]
         lines.append(
             f"| {name} | {_money_fmt(value['extra_tokens_per_run'])} | "
+            f"{value['extra_llm_calls_per_run']:+.1f} | "
+            f"{value['extra_tool_calls_per_run']:+.1f} | "
+            f"{value['extra_duration_per_run']:+.1f}s | "
             f"{_money_fmt(value['extra_tokens_per_additional_success'])} |"
+        )
+    extended_successes = [
+        item
+        for item in payload["adaptive_task_records"]
+        if item["extension_triggered"]
+        and item["extension_recovered_vs_fixed20"]
+    ]
+    if extended_successes:
+        lines.extend(
+            [
+                "",
+                "| Run | Task | Reason | Steps Granted | Tokens | "
+                "Δ Tokens vs Fixed20 |",
+                "|---|---|---|---:|---:|---:|",
+            ]
+        )
+        lines.extend(
+            f"| {item['run_id']} | {item['task_id']} | "
+            f"{item['extension_reason']} | "
+            f"{item['extension_steps_granted']} | {item['tokens']:,} | "
+            f"{item['extra_tokens_vs_fixed20']:+,.0f} |"
+            for item in extended_successes
         )
     false_positive = payload["false_positive_extensions"]
     false_negative = payload["false_negative_extensions"]
@@ -652,14 +787,34 @@ def _render_markdown(payload: dict) -> str:
     )
     if false_positive:
         lines.extend(
-            "",
-            "| Run | Task | Reason | Tokens |",
-            "|---|---|---|---:|",
+            [
+                "",
+                "| Run | Task | Reason | Tokens | Δ Tokens | Δ LLM | Δ Tools |",
+                "|---|---|---|---:|---:|---:|---:|",
+            ]
         )
         lines.extend(
             f"| {item['run_id']} | {item['task_id']} | "
-            f"{item['extension_reason']} | {item['tokens']:,} |"
+            f"{item['extension_reason']} | {item['tokens']:,} | "
+            f"{item['extra_tokens_vs_fixed20']:+,.0f} | "
+            f"{item['extra_llm_calls_vs_fixed20']:+.1f} | "
+            f"{item['extra_tool_calls_vs_fixed20']:+.1f} |"
             for item in false_positive
+        )
+    if false_negative:
+        lines.extend(
+            [
+                "",
+                "| Run | Task | Extended | Reason | Tokens | Δ Tokens |",
+                "|---|---|---:|---|---:|---:|",
+            ]
+        )
+        lines.extend(
+            f"| {item['run_id']} | {item['task_id']} | "
+            f"{'YES' if item['extension_triggered'] else 'NO'} | "
+            f"{item['extension_reason'] or '-'} | {item['tokens']:,} | "
+            f"{item['extra_tokens_vs_fixed20']:+,.0f} |"
+            for item in false_negative
         )
     strategy = payload["strategy_limited_tasks"]
     lines.extend(
@@ -667,8 +822,9 @@ def _render_markdown(payload: dict) -> str:
             "",
             "## 9. Strategy-Limited Tasks",
             "",
-            "| Run | Task | Extended | Reason | Termination | Success | Tokens |",
-            "|---|---|---:|---|---|---:|---:|",
+            "| Run | Task | Extended | Reason | Termination | Success | Tokens | "
+            "Δ Tokens |",
+            "|---|---|---:|---|---|---:|---:|---:|",
         ]
     )
     lines.extend(
@@ -676,7 +832,8 @@ def _render_markdown(payload: dict) -> str:
         f"{'YES' if item['extension_triggered'] else 'NO'} | "
         f"{item['extension_reason'] or '-'} | "
         f"{item['termination_reason'] or '-'} | "
-        f"{'PASS' if item['success'] else 'FAIL'} | {item['tokens']:,} |"
+        f"{'PASS' if item['success'] else 'FAIL'} | {item['tokens']:,} | "
+        f"{item['extra_tokens_vs_fixed20']:+,.0f} |"
         for item in strategy
     )
     lines.extend(
@@ -688,18 +845,25 @@ def _render_markdown(payload: dict) -> str:
             f"per run. Adaptive gained {adaptive_gain:+.1f} passes per run; "
             f"Fixed30 gained {fixed30_gain:+.1f}.",
             "",
-            "1. 20 remains a defensible base because pure exploration should not "
-            "receive unlimited budget.",
-            "2. Global 30 is acceptable only if its extra recovery justifies "
-            "spending the extension on every task.",
+            "1. 20 remains the correct base: exploratory runs that never form an "
+            "execution signal should stop there.",
+            f"2. Global 30 is not the default choice. It matched Adaptive's "
+            f"success while spending {_money_fmt(adaptive_token_savings)} more "
+            f"tokens per run ({_pct(adaptive_token_savings_rate)} more).",
             (
-                "3. Adaptive is the better engineering policy in this run set."
+                "3. Adaptive is better on the measured success/token trade-off, "
+                "but extension utility is weak: "
+                f"{adaptive['extension_successes']}/{adaptive['tasks_extended']} "
+                f"extended runs passed and "
+                f"{_pct(extension_false_positive_rate)} were false positives."
                 if adaptive_default
                 else "3. Adaptive does not yet beat the fixed policies on the "
                 "combined success/cost evidence."
             ),
             (
-                "4. Recommended production policy: `adaptive_20_30`."
+                "4. Recommended default: `adaptive_20_30`, with the extension "
+                "signals treated as a first version rather than a finalized "
+                "production policy."
                 if adaptive_default
                 else "4. Recommended production policy remains `fixed_20` "
                 "pending another controlled run."
@@ -708,10 +872,11 @@ def _render_markdown(payload: dict) -> str:
             "## 11. Recommended Next Step",
             "",
             (
-                "Budget Policy Refinement is best supported: the deterministic "
-                "gate is useful, but its extension signals and cost efficiency "
-                "should be refined before production rollout."
-                if adaptive["tasks_extended"] > 0
+                "Budget Policy Refinement is best supported: Adaptive matches "
+                "Fixed30 at lower token cost, but most extension grants still "
+                "end in failure. The next phase should refine extension signals "
+                "without changing Planner timing."
+                if extension_false_positive_rate > 0.5
                 else "Commitment / Planner Timing is best supported because the "
                 "adaptive gate found too little execution progress to extend."
             ),

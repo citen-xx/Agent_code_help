@@ -23,6 +23,8 @@ async def test_tool_roundtrip_and_final_answer(repo):
     result = await run_agent("分析这个 Java 项目", repo, model=model)
     assert result.answer == "已找到 Main.java，项目结构很简单。"
     assert result.steps == 2
+    assert result.budget_telemetry is not None
+    assert result.budget_telemetry.policy == "adaptive_20_30"
     # the tool result was fed back into messages for the second LLM call
     tool_messages = [m for m in model.history[1] if isinstance(m, ToolMessage)]
     assert len(tool_messages) == 1

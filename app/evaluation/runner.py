@@ -45,6 +45,18 @@ AgentRunner = Callable[
     [BenchmarkTask, Path, str, WorkspaceManager],
     Awaitable[AgentRunOutput],
 ]
+TaskEvaluator = Callable[
+    [
+        BenchmarkTask,
+        Path,
+        AnalyzeResponse | None,
+        TestRunResult | None,
+        list[str],
+        ContextTelemetry,
+    ],
+    dict,
+]
+WorkspacePreparer = Callable[[BenchmarkTask, Path], None]
 
 
 class BenchmarkRunner:
@@ -56,6 +68,8 @@ class BenchmarkRunner:
         workspace_root: str | Path | None = None,
         test_runner: TestRunner = run_workspace_tests,
         agent_runner: AgentRunner | None = None,
+        task_evaluator: TaskEvaluator | None = None,
+        workspace_preparer: WorkspacePreparer | None = None,
         run_id: str | None = None,
         model_name: str | None = None,
         profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
@@ -66,6 +80,8 @@ class BenchmarkRunner:
         self.workspace_root = Path(workspace_root) if workspace_root else None
         self.test_runner = test_runner
         self.agent_runner = agent_runner or self._default_agent_runner
+        self.task_evaluator = task_evaluator
+        self.workspace_preparer = workspace_preparer
         self.run_id = run_id or datetime.now(timezone.utc).strftime(
             "baseline_%Y%m%dT%H%M%S%fZ"
         )
@@ -105,6 +121,7 @@ class BenchmarkRunner:
             workspace_manager=manager,
             profile=self.profile,
             context_lifecycle_compaction=self.context_lifecycle_compaction,
+            test_runner=self.test_runner,
         )
         return AgentRunOutput(
             response=response,
@@ -279,6 +296,8 @@ class BenchmarkRunner:
         category: FailureCategory | None,
         reason: str | None,
         context_telemetry: ContextTelemetry | None = None,
+        benchmark_metrics: dict | None = None,
+        secondary_observations: list[str] | None = None,
         final_diff: str = "",
         hidden_test=None,
         changed_files: list[str] | None = None,
@@ -421,6 +440,8 @@ class BenchmarkRunner:
             total_tokens=usage.total_tokens,
             estimated_cost_usd=usage.estimated_cost_usd,
             context_telemetry=context_telemetry or ContextTelemetry(),
+            benchmark_metrics=benchmark_metrics or {},
+            secondary_observations=secondary_observations or [],
         )
 
     def _failure_result(
@@ -502,6 +523,8 @@ class BenchmarkRunner:
         category: FailureCategory | None = None
         reason: str | None = None
         final_diff = ""
+        benchmark_metrics: dict = {}
+        secondary_observations: list[str] = []
         try:
             repository = self._repository_path(task)
             if not repository.exists():
@@ -526,6 +549,8 @@ class BenchmarkRunner:
                 )
 
             repository_path = Path(workspace.repository_path)
+            if self.workspace_preparer is not None:
+                self.workspace_preparer(task, repository_path)
             try:
                 initial_test = self.test_runner(
                     repository_path,
@@ -635,6 +660,16 @@ class BenchmarkRunner:
             except git.GitError:
                 logger.warning("Failed to get final diff for %s", task.task_id)
             changed_files = self._changed_files(repository_path)
+            quality = self._quality_metrics(changed_files, response)
+            if (
+                task.source != "fixture"
+                and (
+                    quality["modified_test_files"]
+                    or quality["modified_build_files"]
+                )
+            ):
+                category = FailureCategory.TEST_OVERFITTING
+                reason = "Agent modified protected test or build files"
 
             if task.hidden_tests and category is not FailureCategory.TIMEOUT:
                 try:
@@ -661,6 +696,29 @@ class BenchmarkRunner:
                         category = FailureCategory.HIDDEN_TEST_FAILURE
                         reason = "隐藏验收 Maven test 失败"
 
+            if self.task_evaluator is not None:
+                try:
+                    evaluator_payload = self.task_evaluator(
+                        task,
+                        repository_path,
+                        response,
+                        final_test,
+                        changed_files,
+                        context_telemetry,
+                    )
+                    secondary_observations = evaluator_payload.pop(
+                        "secondary_observations",
+                        [],
+                    )
+                    benchmark_metrics = evaluator_payload
+                except Exception as exc:
+                    logger.exception(
+                        "Task evaluator failed for %s",
+                        task.task_id,
+                    )
+                    category = category or FailureCategory.INFRASTRUCTURE_ERROR
+                    reason = reason or f"Task evaluator failed: {exc}"
+
             return self._result(
                 task=task,
                 workspace_id=workspace.workspace_id,
@@ -675,6 +733,8 @@ class BenchmarkRunner:
                 final_diff=final_diff,
                 changed_files=changed_files,
                 context_telemetry=context_telemetry,
+                benchmark_metrics=benchmark_metrics,
+                secondary_observations=secondary_observations,
             )
         except Exception as exc:
             logger.exception("Benchmark task infrastructure failure: %s", task.task_id)

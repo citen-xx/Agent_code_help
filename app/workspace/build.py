@@ -228,6 +228,8 @@ def run_workspace_tests(
                 memory=settings.DOCKER_MAVEN_MEMORY,
                 pids_limit=settings.DOCKER_MAVEN_PIDS_LIMIT,
                 tmpfs_size=settings.DOCKER_MAVEN_TMPFS_SIZE,
+                maven_repo_path=settings.DOCKER_MAVEN_REPO_PATH or None,
+                maven_args=settings.DOCKER_MAVEN_ARGS or None,
             )
         command = selected.command
         popen_kwargs: dict = {

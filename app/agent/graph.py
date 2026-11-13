@@ -21,7 +21,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -225,6 +227,7 @@ def _tool_event(
     invoked: bool,
     patch_applied: bool | None = None,
     auto_generated: bool = False,
+    elapsed_seconds: float | None = None,
 ) -> ToolEvent:
     category = None
     summary = None
@@ -301,6 +304,7 @@ def _tool_event(
         duplicate_results_removed=duplicate_results_removed,
         read_start_line=int(start_line) if start_line else None,
         read_end_line=int(end_line) if end_line else None,
+        elapsed_seconds=elapsed_seconds,
     )
 
 
@@ -705,6 +709,10 @@ def build_agent_graph(
                             else None
                         )
                     ),
+                    elapsed_seconds=(
+                        time.monotonic()
+                        - state.get("started_monotonic", time.monotonic())
+                    ),
                 )
             )
 
@@ -756,6 +764,10 @@ def build_agent_graph(
                     ),
                     invoked=True,
                     auto_generated=True,
+                    elapsed_seconds=(
+                        time.monotonic()
+                        - state.get("started_monotonic", time.monotonic())
+                    ),
                 )
             )
 
@@ -828,6 +840,7 @@ async def run_agent(
     workspace_manager=None,
     profile: AgentProfile | str = DEFAULT_AGENT_PROFILE,
     context_lifecycle_compaction: bool = False,
+    test_runner: Callable | None = None,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -864,6 +877,7 @@ async def run_agent(
             repository_path,
             manager=workspace_manager,
             timeout_seconds=settings.BUILD_TEST_TIMEOUT_SECONDS,
+            test_runner=test_runner,
         )
     system_prompt = build_system_prompt(capabilities)
     graph = build_agent_graph(
@@ -891,6 +905,7 @@ async def run_agent(
         "latest_patch_diff": "",
         "last_failure_summary": None,
         "tool_events": [],
+        "started_monotonic": time.monotonic(),
     }
 
     logger.info(

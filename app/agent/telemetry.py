@@ -31,3 +31,4 @@ class ToolEvent(BaseModel):
     duplicate_results_removed: int = Field(default=0, ge=0)
     read_start_line: int | None = Field(default=None, ge=1)
     read_end_line: int | None = Field(default=None, ge=1)
+    elapsed_seconds: float | None = Field(default=None, ge=0)

@@ -30,6 +30,7 @@ class AgentState(TypedDict):
         latest_patch_diff: Latest diff returned by apply_patch.
         last_failure_summary: Most recent test failure summary.
         tool_events: Passive telemetry for every tool execution.
+        started_monotonic: Agent-run start timestamp for relative telemetry.
     """
 
     task: str
@@ -47,3 +48,4 @@ class AgentState(TypedDict):
     latest_patch_diff: str
     last_failure_summary: str | None
     tool_events: Annotated[list[ToolEvent], operator.add]
+    started_monotonic: float

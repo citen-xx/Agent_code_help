@@ -70,6 +70,25 @@ def test_build_command_has_security_and_resource_limits(repo):
     assert "docker.sock" not in "\n".join(command)
 
 
+def test_build_command_can_mount_readonly_maven_cache_and_args(repo, tmp_path):
+    cache = tmp_path / "m2"
+    cache.mkdir()
+    command = build_docker_run_command(
+        repo,
+        image="maven:3.9-eclipse-temurin-17",
+        cpus="0.5",
+        memory="512m",
+        pids_limit=64,
+        tmpfs_size="128m",
+        container_name="java-code-agent-maven-test",
+        maven_repo_path=cache,
+        maven_args="-o -Dmaven.compiler.source=8",
+    )
+    assert command.count("--mount") == 2
+    assert "target=/root/.m2/repository,readonly" in "\n".join(command)
+    assert "MAVEN_ARGS=-o -Dmaven.compiler.source=8" in command
+
+
 def test_maven_success(repo, monkeypatch):
     result, cleaned = _run(
         monkeypatch,

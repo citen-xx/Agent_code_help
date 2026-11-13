@@ -588,6 +588,22 @@ uv run python -m app.evaluation lifecycle-report
 
 结果写入 `evaluation/results/phase4_5_context_lifecycle/`。
 
+### Real-world Defects4J Benchmark
+
+Phase 5 uses a pinned Defects4J V1 subset with 15 reproducible real Java bugs.
+Fixed revisions, source patches, triggering tests, and ground-truth files stay
+outside Agent workspaces. Test/build file changes invalidate a run.
+
+```bash
+uv run python scripts/build_defects4j_manifest.py \
+  --repos-root /path/to/defects4j/project_repos
+uv run python -m app.evaluation realworld-reproduce
+uv run python -m app.evaluation realworld-run
+uv run python -m app.evaluation realworld-report
+```
+
+结果写入 `evaluation/results/phase5_real_world/`。
+
 重新生成确定性 Fixture 和 bundle：
 
 ```bash

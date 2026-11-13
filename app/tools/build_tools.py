@@ -6,6 +6,7 @@ arguments. They are bound to one workspace repository when created.
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -49,6 +50,7 @@ def create_build_tools(
     repository_path: str | Path,
     manager: "WorkspaceManager | None" = None,
     timeout_seconds: float = DEFAULT_TEST_TIMEOUT_SECONDS,
+    test_runner: Callable | None = None,
 ) -> list[BaseTool]:
     """Create build detection and test execution tools for one workspace."""
     if manager is not None:
@@ -74,7 +76,12 @@ def create_build_tools(
         )
 
     def _run_tests(tool: Literal["auto", "maven", "gradle"] = "auto") -> str:
-        result = run_workspace_tests(repo, tool=tool, timeout_seconds=timeout_seconds)
+        runner = test_runner or run_workspace_tests
+        result = runner(
+            repo,
+            tool=tool,
+            timeout_seconds=timeout_seconds,
+        )
         return result.model_dump_json(indent=2)
 
     logger.debug("Binding build tools to workspace %s (repo=%s)", workspace_id, repo)

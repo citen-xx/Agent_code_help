@@ -55,6 +55,8 @@ def build_docker_run_command(
     pids_limit: int,
     tmpfs_size: str,
     container_name: str,
+    maven_repo_path: str | Path | None = None,
+    maven_args: str | None = None,
 ) -> list[str]:
     """Build the fixed Docker CLI arguments for one Maven test container."""
     repo = repository_path.resolve()
@@ -70,7 +72,7 @@ def build_docker_run_command(
     if pids_limit <= 0:
         raise DockerSandboxError("Docker PID limit 必须大于 0")
 
-    return [
+    command = [
         "docker",
         "run",
         "--name",
@@ -93,14 +95,42 @@ def build_docker_run_command(
         f"/tmp:rw,exec,size={tmpfs_size}",
         "--mount",
         f"type=bind,source={source},target={CONTAINER_WORKDIR}",
-        "--workdir",
-        CONTAINER_WORKDIR,
-        "--env",
-        "CI=true",
-        image,
-        "mvn",
-        "test",
     ]
+    if maven_repo_path:
+        repository_cache = Path(maven_repo_path).expanduser().resolve()
+        if repository_cache.is_dir():
+            cache_source = str(repository_cache)
+            if any(char in cache_source for char in ",\r\n"):
+                raise DockerSandboxError(
+                    "Maven repository 缓存路径包含 Docker mount 不支持的字符"
+                )
+            command.extend(
+                [
+                    "--mount",
+                    "type=bind,source="
+                    f"{cache_source},target=/root/.m2/repository,readonly",
+                ]
+            )
+    command.extend(
+        [
+            "--workdir",
+            CONTAINER_WORKDIR,
+            "--env",
+            "CI=true",
+        ]
+    )
+    if maven_args:
+        if any(char in maven_args for char in "\r\n"):
+            raise DockerSandboxError("Maven args 不能包含换行")
+        command.extend(["--env", f"MAVEN_ARGS={maven_args}"])
+    command.extend(
+        [
+            image,
+            "mvn",
+            "test",
+        ]
+    )
+    return command
 
 
 def _docker_preflight() -> str | None:
@@ -194,6 +224,8 @@ def run_maven_in_docker(
     memory: str,
     pids_limit: int,
     tmpfs_size: str,
+    maven_repo_path: str | Path | None = None,
+    maven_args: str | None = None,
 ) -> TestRunResult:
     """Run fixed ``mvn test`` in a fresh, network-isolated container."""
     started = time.monotonic()
@@ -218,6 +250,8 @@ def run_maven_in_docker(
             pids_limit=pids_limit,
             tmpfs_size=tmpfs_size,
             container_name=container_name,
+            maven_repo_path=maven_repo_path,
+            maven_args=maven_args,
         )
     except DockerSandboxError as exc:
         return _result(

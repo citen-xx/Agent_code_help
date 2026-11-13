@@ -26,6 +26,12 @@ from app.evaluation.phase4_5 import (
     run_lifecycle_controls,
     run_lifecycle_treatment,
 )
+from app.evaluation.phase5 import (
+    DEFAULT_TASKS_FILE as DEFAULT_DEFECTS4J_TASKS_FILE,
+    regenerate_phase5_report,
+    run_realworld_profiles,
+    run_realworld_reproduction,
+)
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -164,6 +170,42 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    realworld_reproduce = subparsers.add_parser(
+        "realworld-reproduce",
+        help="Reproduce Defects4J buggy/fixed candidates",
+    )
+    realworld_reproduce.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    realworld_reproduce.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    realworld_run = subparsers.add_parser(
+        "realworld-run",
+        help="Run Basic and Full on the Defects4J v1 benchmark",
+    )
+    realworld_run.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    realworld_run.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    realworld_report = subparsers.add_parser(
+        "realworld-report",
+        help="Regenerate Phase 5 report from existing benchmark runs",
+    )
+    realworld_report.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    realworld_report.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -264,6 +306,29 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(f"Phase 4.5 report: {report}")
+        return 0
+    if args.command == "realworld-reproduce":
+        report = run_realworld_reproduction(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 5 candidate selection: {report}")
+        return 0
+    if args.command == "realworld-run":
+        report = asyncio.run(
+            run_realworld_profiles(
+                tasks_file=args.tasks_file,
+                output_dir=Path(args.output_dir),
+            )
+        )
+        print(f"Phase 5 report: {report}")
+        return 0
+    if args.command == "realworld-report":
+        report = regenerate_phase5_report(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 5 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

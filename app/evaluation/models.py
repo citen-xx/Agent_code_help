@@ -11,6 +11,8 @@ from app.workspace.models import TestRunResult
 
 
 class FailureCategory(StrEnum):
+    REPRODUCTION_FAILURE = "reproduction_failure"
+    COMPILE_FAILURE = "compile_failure"
     WORKSPACE_SETUP_FAILED = "workspace_setup_failed"
     INITIAL_TEST_UNEXPECTEDLY_PASSED = "initial_test_unexpectedly_passed"
     AGENT_FAILED = "agent_failed"
@@ -18,6 +20,12 @@ class FailureCategory(StrEnum):
     FINAL_TEST_FAILED = "final_test_failed"
     INFRASTRUCTURE_ERROR = "infrastructure_error"
     LOCALIZATION_FAILURE = "localization_failure"
+    ROOT_CAUSE_FAILURE = "root_cause_failure"
+    INCORRECT_PATCH = "incorrect_patch"
+    INCOMPLETE_PATCH = "incomplete_patch"
+    REGRESSION = "regression"
+    TEST_OVERFITTING = "test_overfitting"
+    STEP_LIMIT = "step_limit"
     PLANNING_FAILURE = "planning_failure"
     PATCH_FAILURE = "patch_failure"
     PUBLIC_TEST_FAILURE = "public_test_failure"
@@ -44,6 +52,17 @@ class BenchmarkTask(BaseModel):
     suite: str = "v1"
     difficulty: Difficulty = Difficulty.EASY
     hidden_tests: str | None = None
+    source: str = "fixture"
+    external_difficulty: str | None = None
+    project: str | None = None
+    bug_id: int | None = Field(default=None, ge=1)
+    buggy_revision: str | None = None
+    fixed_revision: str | None = None
+    triggering_tests: list[str] = Field(default_factory=list)
+    relevant_tests: list[str] = Field(default_factory=list)
+    ground_truth_files: list[str] = Field(default_factory=list)
+    jdk: str | None = None
+    test_patch: str | None = None
 
 
 class LLMUsage(BaseModel):
@@ -172,6 +191,8 @@ class BenchmarkTaskResult(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
     estimated_cost_usd: float | None = Field(default=None, ge=0)
     context_telemetry: ContextTelemetry = Field(default_factory=ContextTelemetry)
+    benchmark_metrics: dict = Field(default_factory=dict)
+    secondary_observations: list[str] = Field(default_factory=list)
 
 
 class BenchmarkSummary(BaseModel):

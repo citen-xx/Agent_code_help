@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     DOCKER_MAVEN_MEMORY: str = "1g"
     DOCKER_MAVEN_PIDS_LIMIT: int = 256
     DOCKER_MAVEN_TMPFS_SIZE: str = "256m"
+    DOCKER_MAVEN_REPO_PATH: str = ""
+    DOCKER_MAVEN_ARGS: str = ""
 
 
 @lru_cache

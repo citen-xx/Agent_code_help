@@ -851,6 +851,7 @@ def regenerate_phase5_report(
     output_dir: str | Path = DEFAULT_RESULTS_DIR,
 ) -> Path:
     phase_dir = _phase_dir(output_dir)
+    tasks_path = Path(tasks_file).expanduser().resolve()
     payload = json.loads(
         (phase_dir / "phase5_report.json").read_text(encoding="utf-8")
     )
@@ -889,6 +890,12 @@ def regenerate_phase5_report(
             "basic": v2_data["variants"]["basic"]["metrics"],
             "full": v2_data["variants"]["full"]["metrics"],
         }
+    rejected_path = tasks_path.parent / "rejected_candidates.json"
+    payload["rejected_candidates"] = (
+        json.loads(rejected_path.read_text(encoding="utf-8"))
+        if rejected_path.is_file()
+        else []
+    )
     _write_json(phase_dir / "phase5_report.json", payload)
     report_path = phase_dir / "phase5_report.md"
     _write(report_path, render_phase5_report(payload))
@@ -948,6 +955,12 @@ async def run_realworld_profiles(
             "basic": v2_data["variants"]["basic"]["metrics"],
             "full": v2_data["variants"]["full"]["metrics"],
         }
+    rejected_path = tasks_path.parent / "rejected_candidates.json"
+    payload["rejected_candidates"] = (
+        json.loads(rejected_path.read_text(encoding="utf-8"))
+        if rejected_path.is_file()
+        else []
+    )
     _write_json(phase_dir / "experiment.json", payload)
     _write_json(phase_dir / "phase5_report.json", payload)
     _write(phase_dir / "phase5_report.md", render_phase5_report(payload))
@@ -988,6 +1001,26 @@ def render_phase5_report(payload: dict) -> str:
         "Selection and rejection records are in `candidate_selection.json`; "
         "only stable reproduction candidates enter the manifest.",
         "",
+        "| Task | Project | Bug | Difficulty | Trigger Tests | Relevant Tests |",
+        "|---|---|---:|---|---:|---:|",
+    ]
+    for task in basic["tasks"]:
+        lines.append(
+            f"| {task['task_id']} | {task.get('project')} | "
+            f"{task.get('bug_id')} | {task.get('external_difficulty')} | "
+            f"{len(task.get('triggering_tests', []))} | "
+            f"{len(task.get('relevant_tests', []))} |"
+        )
+    rejected = payload.get("rejected_candidates", [])
+    if rejected:
+        lines.extend(["", "Rejected during reproduction:", ""])
+        for item in rejected:
+            lines.append(
+                f"- `{item['task_id']}`: {item['rejection_reason']}"
+            )
+    lines.extend(
+        [
+        "",
         "## 2. Leakage Protection",
         "",
         "The Agent receives only a cloned buggy workspace and a generic problem "
@@ -1004,7 +1037,8 @@ def render_phase5_report(payload: dict) -> str:
         "",
         "| Difficulty | Count |",
         "|---|---:|",
-    ]
+        ]
+    )
     for difficulty in ("local", "cross_file", "structural"):
         lines.append(f"| {difficulty} | {difficulties.get(difficulty, 0)} |")
     lines.extend(
@@ -1031,6 +1065,31 @@ def render_phase5_report(payload: dict) -> str:
             f"{_num(_averages(profile_rows, 'tool_calls'), 2)} | "
             f"{_num(summary['average_duration'])}s |"
         )
+    difficulty_by_task = {
+        task["task_id"]: task.get("external_difficulty")
+        for task in basic["tasks"]
+    }
+    lines.extend(
+        [
+            "",
+            "### Success by External Difficulty",
+            "",
+            "| Profile | Local | Cross-file | Structural |",
+            "|---|---:|---:|---:|",
+        ]
+    )
+    for profile in ("basic", "full"):
+        cells = []
+        for difficulty in ("local", "cross_file", "structural"):
+            group = [
+                row
+                for row in rows[profile]
+                if difficulty_by_task.get(row["task_id"]) == difficulty
+            ]
+            cells.append(
+                f"{sum(1 for row in group if row['success'])}/{len(group)}"
+            )
+        lines.append(f"| {profile} | {' | '.join(cells)} |")
     lines.extend(
         [
             "",
@@ -1125,6 +1184,16 @@ def render_phase5_report(payload: dict) -> str:
         for profile in ("basic", "full")
         for row in rows[profile]
     )
+    basic_patch_failures = sum(
+        bool(row.get("first_patch_files"))
+        for row in rows["basic"]
+        if not row.get("success")
+    )
+    full_patch_failures = sum(
+        bool(row.get("first_patch_files"))
+        for row in rows["full"]
+        if not row.get("success")
+    )
     lines.extend(["", "## 9. Failure Analysis", ""])
     for category, count in failure_counts.most_common(5):
         lines.append(f"- `{category}`: {count} task(s).")
@@ -1135,6 +1204,8 @@ def render_phase5_report(payload: dict) -> str:
             f"- Search/patch budget exhaustion: Basic made no file change in "
             f"{basic_no_change} failed tasks; Full made no change in "
             f"{full_no_change}.",
+            f"- Failed after attempting a patch: Basic {basic_patch_failures}, "
+            f"Full {full_patch_failures}.",
             f"- Test overfitting was not observed: protected test/build files "
             f"were modified in {protected_changes} task-runs.",
             "- Localization was not the primary failure: trigger-relevant "

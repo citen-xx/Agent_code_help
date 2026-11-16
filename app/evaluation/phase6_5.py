@@ -396,9 +396,11 @@ def _extension_audit_markdown(records: list[dict]) -> str:
     )
     if plan_only:
         lines.extend(
-            "",
-            "| Task | Patch After Extension | Test After Extension | Success |",
-            "|---|---:|---:|---:|",
+            [
+                "",
+                "| Task | Patch After Extension | Test After Extension | Success |",
+                "|---|---:|---:|---:|",
+            ]
         )
         lines.extend(
             f"| {item['run_id']} / {item['task_id']} | "

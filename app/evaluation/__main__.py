@@ -34,6 +34,10 @@ from app.evaluation.phase5 import (
 )
 from app.evaluation.phase5_5 import regenerate_phase5_5_report, run_phase5_5
 from app.evaluation.phase6 import regenerate_phase6_report, run_phase6
+from app.evaluation.phase6_5 import (
+    regenerate_phase6_5_report,
+    run_phase6_5,
+)
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -256,6 +260,30 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    phase6_5 = subparsers.add_parser(
+        "phase6-5",
+        help="Run the adaptive budget refinement A/B experiment",
+    )
+    phase6_5.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    phase6_5.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    phase6_5_report = subparsers.add_parser(
+        "phase6-5-report",
+        help="Regenerate the adaptive budget refinement report",
+    )
+    phase6_5_report.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    phase6_5_report.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -407,6 +435,20 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(f"Phase 6 report: {report}")
+        return 0
+    if args.command == "phase6-5":
+        report = run_phase6_5(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 6.5 report: {report}")
+        return 0
+    if args.command == "phase6-5-report":
+        report = regenerate_phase6_5_report(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 6.5 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

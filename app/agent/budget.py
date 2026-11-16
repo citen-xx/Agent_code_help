@@ -9,6 +9,7 @@ class StepBudgetPolicyName(StrEnum):
     FIXED_20 = "fixed_20"
     FIXED_30 = "fixed_30"
     ADAPTIVE_20_30 = "adaptive_20_30"
+    ADAPTIVE_EXECUTION_ONLY = "adaptive_execution_only"
 
 
 DEFAULT_PRODUCTION_BUDGET = StepBudgetPolicyName.ADAPTIVE_20_30
@@ -94,13 +95,19 @@ class FixedStepBudgetPolicy(StepBudgetPolicy):
 class AdaptiveStepBudgetPolicy(StepBudgetPolicy):
     """Conservative 20 -> 25 -> 30 policy."""
 
-    def __init__(self) -> None:
-        self.name = StepBudgetPolicyName.ADAPTIVE_20_30
+    def __init__(
+        self,
+        *,
+        name: str = StepBudgetPolicyName.ADAPTIVE_20_30,
+        allow_plan_only_extension: bool = True,
+    ) -> None:
+        self.name = name
         self.base_step_limit = 20
         self.hard_step_limit = 30
         self.extension_increment = 5
         self.recent_window = 5
         self.plan_recency_window = 4
+        self.allow_plan_only_extension = allow_plan_only_extension
 
     def should_extend(self, progress: BudgetProgress) -> BudgetDecision:
         if progress.final_test_passed:
@@ -160,12 +167,28 @@ class AdaptiveStepBudgetPolicy(StepBudgetPolicy):
             )
         )
         if recent_plan and plan_pending:
-            return BudgetDecision(
-                extend=True,
-                extra_steps=self.extension_increment,
-                reason="recent_repair_plan_pending",
-                last_progress_event=last_progress,
+            execution_backed_replan = (
+                progress.has_seen_test_failure
+                and progress.last_successful_patch_step is not None
+                and progress.last_test_step is not None
+                and progress.last_test_step
+                >= progress.last_successful_patch_step
+                and progress.last_test_failed
             )
+            if (
+                self.allow_plan_only_extension
+                or execution_backed_replan
+            ):
+                return BudgetDecision(
+                    extend=True,
+                    extra_steps=self.extension_increment,
+                    reason=(
+                        "recent_repair_plan_pending"
+                        if self.allow_plan_only_extension
+                        else "repair_cycle_active"
+                    ),
+                    last_progress_event=last_progress,
+                )
 
         repair_cycle = (
             progress.has_seen_test_failure
@@ -231,6 +254,11 @@ def create_step_budget_policy(
         return FixedStepBudgetPolicy(
             limit=30,
             name=StepBudgetPolicyName.FIXED_30,
+        )
+    if resolved is StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY:
+        return AdaptiveStepBudgetPolicy(
+            name=StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY,
+            allow_plan_only_extension=False,
         )
     return AdaptiveStepBudgetPolicy()
 

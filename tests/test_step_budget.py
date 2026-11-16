@@ -44,6 +44,86 @@ def test_recent_plan_allows_extension():
     assert decision.reason == "recent_repair_plan_pending"
 
 
+def test_execution_only_candidate_rejects_plan_only_extension():
+    policy = create_step_budget_policy(
+        StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY
+    )
+    decision = policy.should_extend(
+        _progress(
+            plan_active=True,
+            last_plan_step=19,
+            recent_execution_events=["step 19: create_repair_plan"],
+        )
+    )
+    assert decision.extend is False
+    assert decision.reason == "no_qualifying_execution_progress"
+
+
+def test_execution_only_candidate_extends_execution_backed_replan():
+    policy = create_step_budget_policy(
+        StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY
+    )
+    decision = policy.should_extend(
+        _progress(
+            plan_active=True,
+            plan_stale=False,
+            has_seen_test_failure=True,
+            last_plan_step=19,
+            last_successful_patch_step=14,
+            last_test_step=15,
+            last_test_failed=True,
+            recent_execution_events=["step 19: create_repair_plan"],
+        )
+    )
+    assert decision.extend is True
+    assert decision.reason == "repair_cycle_active"
+
+
+def test_execution_only_candidate_preserves_other_execution_rules():
+    policy = create_step_budget_policy(
+        StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY
+    )
+    patch = policy.should_extend(
+        _progress(
+            last_successful_patch_step=19,
+            recent_execution_events=["step 19: apply_patch"],
+        )
+    )
+    repair = policy.should_extend(
+        _progress(
+            has_seen_test_failure=True,
+            repair_rounds=1,
+            last_successful_patch_step=18,
+            last_test_step=18,
+            last_test_failed=True,
+            recent_execution_events=[
+                "step 18: apply_patch",
+                "step 18: run_tests",
+            ],
+        )
+    )
+    exploration = policy.should_extend(_progress())
+    success = policy.should_extend(
+        _progress(
+            final_test_passed=True,
+            recent_execution_events=["step 20: run_tests"],
+        )
+    )
+    hard_cap = policy.should_extend(
+        _progress(
+            step_count=30,
+            current_step_limit=30,
+            last_successful_patch_step=29,
+            recent_execution_events=["step 29: apply_patch"],
+        )
+    )
+    assert patch.extend is True
+    assert repair.extend is True
+    assert exploration.extend is False
+    assert success.extend is False
+    assert hard_cap.extend is False
+
+
 def test_patch_awaiting_test_allows_extension():
     policy = create_step_budget_policy(StepBudgetPolicyName.ADAPTIVE_20_30)
     decision = policy.should_extend(
@@ -168,6 +248,24 @@ def test_fixed_policies_share_interface():
     assert fixed20.should_extend(_progress()).extend is False
     assert fixed30.base_step_limit == 30
     assert fixed30.hard_step_limit == 30
+
+
+def test_control_and_candidate_policies_do_not_share_state():
+    control = create_step_budget_policy(
+        StepBudgetPolicyName.ADAPTIVE_20_30
+    )
+    candidate = create_step_budget_policy(
+        StepBudgetPolicyName.ADAPTIVE_EXECUTION_ONLY
+    )
+    progress = _progress(
+        plan_active=True,
+        last_plan_step=19,
+        recent_execution_events=["step 19: create_repair_plan"],
+    )
+    assert control.should_extend(progress).extend is True
+    assert candidate.should_extend(progress).extend is False
+    assert control.name == "adaptive_20_30"
+    assert candidate.name == "adaptive_execution_only"
 
 
 def test_production_default_is_adaptive_with_legacy_test_limits():

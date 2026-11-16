@@ -26,6 +26,10 @@ class AnalyzeRequest(BaseModel):
     repository_path: str | None = Field(
         default=None, min_length=1, description="Local repository path to analyze (legacy)."
     )
+    evidence_commitment: bool = Field(
+        default=False,
+        description="Enable runtime evidence validation and repair commitment.",
+    )
 
     @model_validator(mode="after")
     def _validate_target(self) -> "AnalyzeRequest":

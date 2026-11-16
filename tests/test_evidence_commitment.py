@@ -9,6 +9,7 @@ from app.agent.commitment import EvidenceCommitmentController
 from app.agent.graph import run_agent
 from app.repair.models import (
     CreateEvidenceRepairPlanRequest,
+    EvidenceRepairPlan,
     PlanExecutionStatus,
 )
 from app.repair.tools import create_repair_plan_tools
@@ -184,6 +185,7 @@ async def test_sufficient_evidence_prompt_and_plan_execution_tracking(
     )
     assert result.modified_files == ["Main.java"]
     assert result.repair_plan is not None
+    assert isinstance(result.repair_plan, EvidenceRepairPlan)
     telemetry = result.commitment_telemetry
     assert telemetry is not None
     assert telemetry.mode == "evidence_commitment"

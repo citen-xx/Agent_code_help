@@ -22,7 +22,6 @@ from app.evaluation.phase5 import (
     prepare_defects4j_workspace,
 )
 from app.evaluation.phase5_5 import _timeline
-from app.evaluation.phase6 import _metrics
 from app.evaluation.phase6_5 import PHASE65_DIR_NAME, _test_outcomes
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, PROJECT_ROOT
@@ -504,7 +503,33 @@ def _policy_metrics(
     records: list[dict],
     reports: list[BenchmarkReport],
 ) -> dict:
-    base = _metrics(records, len(reports))
+    passed = sum(item["success"] for item in records)
+    total_tokens = sum(item["tokens"] for item in records)
+    base = {
+        "runs": len(reports),
+        "task_runs": len(records),
+        "passed": passed,
+        "success_rate": passed / len(records) if records else 0.0,
+        "average_passed_per_run": (
+            passed / len(reports) if reports else 0.0
+        ),
+        "total_tokens": total_tokens,
+        "average_task_tokens": (
+            total_tokens / len(records) if records else 0.0
+        ),
+        "average_run_tokens": (
+            total_tokens / len(reports) if reports else 0.0
+        ),
+        "average_llm_calls": _mean(
+            [item["llm_calls"] for item in records]
+        ) or 0.0,
+        "average_tool_calls": _mean(
+            [item["tool_calls"] for item in records]
+        ) or 0.0,
+        "average_duration": _mean(
+            [item["duration_seconds"] for item in records]
+        ) or 0.0,
+    }
     located = [
         item
         for item in records
@@ -607,8 +632,17 @@ def _policy_metrics(
         "average_first_patch_step": _mean(
             [item["first_patch_step"] for item in records]
         ),
+        "average_relevant_to_hypothesis_gap": _mean(
+            [item["relevant_to_hypothesis_gap"] for item in records]
+        ),
+        "average_relevant_to_plan_gap": _mean(
+            [item["relevant_to_plan_gap"] for item in records]
+        ),
         "average_plan_to_patch_gap": _mean(
             [item["plan_to_patch_gap"] for item in records]
+        ),
+        "average_hypothesis_to_patch_gap": _mean(
+            [item["hypothesis_to_patch_gap"] for item in records]
         ),
         "average_relevant_to_patch_gap": _mean(
             [item["relevant_to_patch_gap"] for item in records]
@@ -687,75 +721,177 @@ def _write_design(phase_dir: Path) -> None:
 def _render_report(payload: dict) -> str:
     control = payload["metrics"]["control"]
     treatment = payload["metrics"]["treatment"]
+    comparison = payload["comparison"]
     lines = [
         "# Phase 7 Evidence-driven Repair Commitment",
         "",
-        "## 1. Commitment",
+        "| Metric | Control | Treatment |",
+        "|---|---:|---:|",
+        f"| Success | {control['passed']}/{control['task_runs']} "
+        f"({control['success_rate'] * 100:.1f}%) | "
+        f"{treatment['passed']}/{treatment['task_runs']} "
+        f"({treatment['success_rate'] * 100:.1f}%) |",
+        f"| Patches | {control['runs_with_patch']} | "
+        f"{treatment['runs_with_patch']} |",
+        f"| No-Patch failures | {control['no_patch_failures']} | "
+        f"{treatment['no_patch_failures']} |",
+        f"| Avg Tokens/Task | {control['average_task_tokens']:,.0f} | "
+        f"{treatment['average_task_tokens']:,.0f} |",
         "",
-        "| Variant | Success | Hypothesis | Plan | Patch | Patch Conversion | "
-        "Success Conversion | First Plan | First Patch | Plan→Patch | Relevant→Patch |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "## 1. Hypothesis Timing",
+        "",
+        f"Treatment formed a structured Hypothesis in "
+        f"{treatment['runs_with_hypothesis']}/{treatment['task_runs']} runs. "
+        f"Average first Hypothesis step: "
+        f"{_fmt(treatment['average_first_hypothesis_step'])}; average "
+        f"relevant-to-Hypothesis gap: "
+        f"{_fmt(treatment['average_relevant_to_hypothesis_gap'])}.",
+        "Control has no structured Hypothesis field, so its Hypothesis timing "
+        "is not available rather than zero.",
+        "",
+        "## 2. Plan Timing",
     ]
-    for name, value in (("Control", control), ("Treatment", treatment)):
+    lines.extend(
+        [
+            "",
+            f"Average first Plan step fell from "
+            f"{_fmt(control['average_first_plan_step'])} to "
+            f"{_fmt(treatment['average_first_plan_step'])}. "
+            f"Average relevant-to-Plan gap changed from "
+            f"{_fmt(control['average_relevant_to_plan_gap'])} to "
+            f"{_fmt(treatment['average_relevant_to_plan_gap'])}.",
+            "",
+            "## 3. Plan-to-Patch Gap",
+            "",
+            f"First Patch moved from step "
+            f"{_fmt(control['average_first_patch_step'])} to "
+            f"{_fmt(treatment['average_first_patch_step'])}. "
+            f"Plan-to-Patch gap changed from "
+            f"{_fmt(control['average_plan_to_patch_gap'])} to "
+            f"{_fmt(treatment['average_plan_to_patch_gap'])}; "
+            f"Hypothesis-to-Patch gap was "
+            f"{_fmt(treatment['average_hypothesis_to_patch_gap'])}; "
+            f"relevant-to-Patch gap changed from "
+            f"{_fmt(control['average_relevant_to_patch_gap'])} to "
+            f"{_fmt(treatment['average_relevant_to_patch_gap'])}.",
+            "",
+            "## 4. No-Patch Failure",
+            "",
+            f"No-Patch failures fell from {control['no_patch_failures']} to "
+            f"{treatment['no_patch_failures']}. Patch conversion changed from "
+            f"{control['patch_conversion_rate'] * 100:.1f}% to "
+            f"{treatment['patch_conversion_rate'] * 100:.1f}%.",
+            "",
+            "## 5. Patch Correctness",
+            "",
+            f"Patch success rate changed from "
+            f"{control['patch_success_rate'] * 100:.1f}% to "
+            f"{treatment['patch_success_rate'] * 100:.1f}%. The Treatment "
+            "attempted more Patches but a larger share were incorrect; this is "
+            "a negative quality signal even though overall success improved.",
+            "",
+            "| Category | Control | Treatment |",
+            "|---|---:|---:|",
+        ]
+    )
+    for category in ("local", "cross_file", "structural"):
+        c = control["category_success"][category]
+        t = treatment["category_success"][category]
         lines.append(
-            f"| {name} | {value['passed']}/{value['task_runs']} "
-            f"({value['success_rate'] * 100:.1f}%) | "
-            f"{value['runs_with_hypothesis']} | "
-            f"{value['runs_with_plan']} | {value['runs_with_patch']} | "
-            f"{value['patch_conversion_rate'] * 100:.1f}% | "
-            f"{value['successful_patch_conversion'] * 100:.1f}% | "
-            f"{_fmt(value['average_first_plan_step'])} | "
-            f"{_fmt(value['average_first_patch_step'])} | "
-            f"{_fmt(value['average_plan_to_patch_gap'])} | "
-            f"{_fmt(value['average_relevant_to_patch_gap'])} |"
+            f"| {category} | {c['passed']}/{c['total']} | "
+            f"{t['passed']}/{t['total']} |"
         )
     lines.extend(
         [
             "",
-            "## 2. Repair Quality",
+            "| Failure Category | Control | Treatment |",
+            "|---|---:|---:|",
+        ]
+    )
+    failure_keys = sorted(
+        set(control["failure_categories"])
+        | set(treatment["failure_categories"])
+    )
+    lines.extend(
+        f"| {category} | "
+        f"{control['failure_categories'].get(category, 0)} | "
+        f"{treatment['failure_categories'].get(category, 0)} |"
+        for category in failure_keys
+    )
+    lines.extend(
+        [
             "",
-            "| Variant | Patch Success | Plan Completion | Hypothesis Revision | "
-            "No-Patch Failures | Stable Pass | Stable Fail | Unstable |",
+            "## 6. Exploration Trade-off",
+            "",
+            f"Plan completion: {control['plan_completion_rate'] * 100:.1f}% → "
+            f"{treatment['plan_completion_rate'] * 100:.1f}%. "
+            f"Hypothesis-to-Patch conversion: "
+            f"{_pct(treatment['hypothesis_to_patch_conversion'])}. "
+            f"Hypothesis revision rate: "
+            f"{_pct(treatment['hypothesis_revision_rate'])}. "
+            f"Average post-Plan exploration: "
+            f"{_fmt(control['average_post_plan_exploration'])} → "
+            f"{_fmt(treatment['average_post_plan_exploration'])}. "
+            f"Broad-exploration blocks: "
+            f"{treatment['broad_exploration_block_runs']}. "
+            f"Invalid Plan attempts: {treatment['invalid_plan_runs']}; "
+            f"Patch/Plan mismatches: "
+            f"{treatment['patch_plan_mismatch_runs']}.",
+            f"Stable Pass/Fail/Unstable: Control "
+            f"{len(control['stable_success_tasks'])}/"
+            f"{len(control['stable_fail_tasks'])}/"
+            f"{len(control['unstable_tasks'])}; Treatment "
+            f"{len(treatment['stable_success_tasks'])}/"
+            f"{len(treatment['stable_fail_tasks'])}/"
+            f"{len(treatment['unstable_tasks'])}.",
+            "",
+            "## 7. Cost",
+            "",
+            "| Variant | Tokens | Prompt | Completion | LLM | Tools | Duration | "
+            "Tokens/Success |",
             "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for name, value in (("Control", control), ("Treatment", treatment)):
+    for name in ("control", "treatment"):
+        value = payload["metrics"][name]
+        records = payload["records"][name]
         lines.append(
-            f"| {name} | {value['patch_success_rate'] * 100:.1f}% | "
-            f"{value['plan_completion_rate'] * 100:.1f}% | "
-            f"{_pct(value['hypothesis_revision_rate'])} | "
-            f"{value['no_patch_failures']} | "
-            f"{len(value['stable_success_tasks'])} | "
-            f"{len(value['stable_fail_tasks'])} | "
-            f"{len(value['unstable_tasks'])} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## 3. Efficiency",
-            "",
-            "| Variant | Avg Tokens/Task | Tokens/Success | Prompt | Completion | "
-            "LLM Calls | Tool Calls | Duration | Post-Plan Exploration |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
-        ]
-    )
-    for name, value in (("Control", control), ("Treatment", treatment)):
-        lines.append(
-            f"| {name} | {value['average_task_tokens']:,.0f} | "
-            f"{_num(value['tokens_per_success'])} | "
-            f"{sum(item['prompt_tokens'] for item in payload['records'][name.lower()]):,} | "
-            f"{sum(item['completion_tokens'] for item in payload['records'][name.lower()]):,} | "
+            f"| {name.title()} | {value['average_task_tokens']:,.0f} | "
+            f"{sum(item['prompt_tokens'] for item in records):,} | "
+            f"{sum(item['completion_tokens'] for item in records):,} | "
             f"{value['average_llm_calls']:.1f} | "
             f"{value['average_tool_calls']:.1f} | "
             f"{value['average_duration']:.1f}s | "
-            f"{_fmt(value['average_post_plan_exploration'])} |"
+            f"{_num(value['tokens_per_success'])} |"
         )
     lines.extend(
         [
             "",
-            "## 4. Task-level",
+            "## 8. Improvements",
             "",
-            "| Task | Control | Treatment | Classification |",
+            "Tasks meeting a stable Treatment improvement: "
+            + (
+                ", ".join(
+                    f"`{task_id}`"
+                    for task_id in comparison["improved_tasks"]
+                )
+                or "none"
+            )
+            + ".",
+            "",
+            "## 9. Regressions",
+            "",
+            "Stable Treatment regressions: "
+            + (
+                ", ".join(
+                    f"`{task_id}`"
+                    for task_id in comparison["regressed_tasks"]
+                )
+                or "none"
+            )
+            + ".",
+            "",
+            "| Task | Control Runs | Treatment Runs | Classification |",
             "|---|---|---|---|",
         ]
     )
@@ -769,11 +905,14 @@ def _render_report(payload: dict) -> str:
     lines.extend(
         [
             "",
-            "## 5. Conclusion",
+            "## 10. Default Capability",
             "",
             payload["conclusion"],
             "",
-            "## 6. Recommended Next Step",
+            "The capability remains opt-in because incorrect-Patch risk and "
+            "structural-task success regressed.",
+            "",
+            "## Recommended Next Step",
             "",
             payload["recommendation"],
             "",
@@ -848,6 +987,16 @@ def _build_payload(
             or gap_delta < 0
         )
     )
+    structural_control = control["category_success"]["structural"]
+    structural_treatment = treatment["category_success"]["structural"]
+    structural_regression = (
+        structural_treatment["success_rate"]
+        < structural_control["success_rate"]
+    )
+    patch_accuracy_regression = (
+        treatment["patch_success_rate"]
+        < control["patch_success_rate"]
+    )
     if success_delta < 0:
         conclusion = (
             f"Treatment reduced success by "
@@ -857,6 +1006,21 @@ def _build_payload(
         recommendation = (
             "Retain the Control and refine failure-feedback quality before "
             "another commitment experiment."
+        )
+    elif positive and (
+        structural_regression or patch_accuracy_regression
+    ):
+        conclusion = (
+            "Treatment materially improved success, Plan timing, Patch "
+            "conversion, and no-patch failures, but the stricter commitment "
+            "also increased incorrect Patch risk: patch success rate fell and "
+            "structural-task success regressed. This is a promising but mixed "
+            "result, not sufficient for default rollout."
+        )
+        recommendation = (
+            "Advance Repair Hypothesis Quality: validate why a proposed change "
+            "follows from the observed source behavior before committing, while "
+            "retaining the earlier evidence signal."
         )
     elif positive:
         conclusion = (
@@ -903,8 +1067,14 @@ def _build_payload(
         "conclusion": conclusion,
         "recommendation": recommendation,
         "default_capability_recommended": bool(
-            positive and success_delta >= 0
+            positive
+            and not structural_regression
+            and not patch_accuracy_regression
         ),
+        "regression_signals": {
+            "structural_success_regression": structural_regression,
+            "patch_success_rate_regression": patch_accuracy_regression,
+        },
     }
 
 

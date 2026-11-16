@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-from app.repair.models import CreateRepairPlanRequest
+from app.repair.models import (
+    CreateEvidenceRepairPlanRequest,
+    CreateRepairPlanRequest,
+)
 from app.tools.repo import ToolError
 
 if TYPE_CHECKING:
@@ -16,6 +19,8 @@ def create_repair_plan_tools(
     workspace_id: str,
     repository_path: str | Path,
     manager: "WorkspaceManager | None" = None,
+    *,
+    require_evidence: bool = False,
 ) -> list[BaseTool]:
     if manager is not None:
         repo = manager.assert_repository_binding(workspace_id, repository_path)
@@ -43,7 +48,12 @@ def create_repair_plan_tools(
             raise ToolError(f"计划目标文件不存在: {raw_path!r}")
 
     def _create_plan(**kwargs) -> str:
-        request = CreateRepairPlanRequest.model_validate(kwargs)
+        request_class = (
+            CreateEvidenceRepairPlanRequest
+            if require_evidence
+            else CreateRepairPlanRequest
+        )
+        request = request_class.model_validate(kwargs)
         if not request.validation_plan.run_maven_test:
             raise ToolError("Repair Plan 必须要求运行 Maven test")
         if not request.validation_plan.focus:
@@ -52,19 +62,41 @@ def create_repair_plan_tools(
             _validate_relative_file(path)
         for change in request.planned_changes:
             _validate_relative_file(change.file_path)
+        if isinstance(request, CreateEvidenceRepairPlanRequest):
+            for evidence in request.hypothesis.evidence:
+                if evidence.path:
+                    _validate_relative_file(evidence.path)
+                if (
+                    evidence.start_line is not None
+                    and evidence.end_line is not None
+                    and evidence.end_line < evidence.start_line
+                ):
+                    raise ToolError("Evidence line range 非法")
+            for path in request.hypothesis.suspected_files:
+                _validate_relative_file(path)
         return request.model_dump_json(indent=2)
 
+    description = (
+        "Create or revise the structured repair plan before apply_patch. "
+        "This is planning-only and never edits or executes code. Include "
+        "target symbols, impacted files/tests, planned changes, risks, and "
+        "a validation plan that requires Maven test. When revising after a "
+        "failed test, provide revision_reason."
+    )
+    if require_evidence:
+        description += (
+            " Evidence-driven mode requires a RepairHypothesis whose evidence "
+            "references only already-observed runtime information."
+        )
     return [
         StructuredTool.from_function(
             name="create_repair_plan",
-            description=(
-                "Create or revise the structured repair plan before apply_patch. "
-                "This is planning-only and never edits or executes code. Include "
-                "target symbols, impacted files/tests, planned changes, risks, and "
-                "a validation plan that requires Maven test. When revising after a "
-                "failed test, provide revision_reason."
-            ),
+            description=description,
             func=_create_plan,
-            args_schema=CreateRepairPlanRequest,
+            args_schema=(
+                CreateEvidenceRepairPlanRequest
+                if require_evidence
+                else CreateRepairPlanRequest
+            ),
         )
     ]

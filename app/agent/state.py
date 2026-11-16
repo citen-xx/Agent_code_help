@@ -6,6 +6,7 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import BaseMessage
 
 from app.agent.budget import BudgetExtension
+from app.agent.commitment import PlanStatusEvent
 from app.repair.models import PlanRevision, RepairPlan
 from app.agent.telemetry import ToolEvent
 from app.workspace.models import TestRunResult
@@ -36,6 +37,10 @@ class AgentState(TypedDict):
         budget_extensions: Deterministic adaptive-budget decisions.
         termination_reason: Stable reason why the Agent loop ended.
         last_progress_event: Most recent plan/patch/test progress marker.
+        plan_status_events: Structured plan execution state transitions.
+        evidence_prompt_sent: Whether sufficient-evidence guidance was emitted.
+        evidence_sufficient_step: First step that met runtime evidence readiness.
+        commitment_validation_errors: Rejected evidence/plan violations.
     """
 
     task: str
@@ -58,3 +63,7 @@ class AgentState(TypedDict):
     budget_extensions: Annotated[list[BudgetExtension], operator.add]
     termination_reason: str | None
     last_progress_event: str | None
+    plan_status_events: Annotated[list[PlanStatusEvent], operator.add]
+    evidence_prompt_sent: bool
+    evidence_sufficient_step: int | None
+    commitment_validation_errors: Annotated[list[str], operator.add]

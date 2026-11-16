@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.agent.budget import StepBudgetTelemetry
 from app.agent.capabilities import DEFAULT_AGENT_PROFILE, AgentProfile
+from app.agent.commitment import CommitmentTelemetry
 from app.agent.telemetry import ToolEvent
-from app.repair.models import PlanRevision, RepairPlan
+from app.repair.models import EvidenceRepairPlan, PlanRevision, RepairPlan
 from app.workspace.models import TestRunResult
 
 
@@ -103,7 +104,7 @@ class AnalyzeResponse(BaseModel):
         default="",
         description="Current uncommitted diff after the Agent run.",
     )
-    repair_plan: RepairPlan | None = Field(
+    repair_plan: RepairPlan | EvidenceRepairPlan | None = Field(
         default=None,
         description="Latest structured repair plan.",
     )
@@ -114,4 +115,8 @@ class AnalyzeResponse(BaseModel):
     budget_telemetry: StepBudgetTelemetry | None = Field(
         default=None,
         description="Deterministic step-budget decisions and termination data.",
+    )
+    commitment_telemetry: CommitmentTelemetry | None = Field(
+        default=None,
+        description="Evidence readiness and plan-execution commitment telemetry.",
     )

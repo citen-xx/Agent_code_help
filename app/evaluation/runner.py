@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +82,7 @@ class BenchmarkRunner:
         context_lifecycle_compaction: bool = False,
         max_steps: int = 20,
         step_budget_policy: str | StepBudgetPolicy | None = None,
+        evidence_commitment: bool = False,
     ):
         self.tasks = tasks
         self.output_dir = Path(output_dir)
@@ -94,7 +96,11 @@ class BenchmarkRunner:
         )
         self.model_name = model_name or settings.LLM_MODEL or "unknown"
         self.profile = resolve_profile(profile)
-        self.capabilities = capabilities_for(self.profile)
+        self.evidence_commitment = evidence_commitment
+        self.capabilities = replace(
+            capabilities_for(self.profile),
+            evidence_commitment=evidence_commitment,
+        )
         self.context_lifecycle_compaction = context_lifecycle_compaction
         self.max_steps = max_steps
         self.step_budget_policy = (
@@ -141,6 +147,7 @@ class BenchmarkRunner:
             test_runner=self.test_runner,
             max_steps=self.max_steps,
             step_budget_policy=self.step_budget_policy,
+            evidence_commitment=self.evidence_commitment,
         )
         return AgentRunOutput(
             response=response,
@@ -461,6 +468,9 @@ class BenchmarkRunner:
             context_telemetry=context_telemetry or ContextTelemetry(),
             budget_telemetry=(
                 response.budget_telemetry if response else None
+            ),
+            commitment_telemetry=(
+                response.commitment_telemetry if response else None
             ),
             benchmark_metrics=benchmark_metrics or {},
             secondary_observations=secondary_observations or [],

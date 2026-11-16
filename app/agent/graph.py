@@ -24,6 +24,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -55,12 +56,25 @@ from app.agent.budget import (
     production_step_budget_name,
 )
 from app.agent.context_lifecycle import compact_model_messages
+from app.agent.commitment import (
+    CommitmentTelemetry,
+    EXPLORATION_TOOLS,
+    EvidenceCommitmentController,
+    PlanStatusEvent,
+)
 from app.agent.state import AgentState
 from app.agent.telemetry import PatchErrorCategory, ToolEvent
 from app.code_intel.tools import create_code_intel_tools
 from app.core.config import settings
 from app.llm.client import build_chat_model
-from app.repair.models import CreateRepairPlanRequest, PlanRevision, RepairPlan
+from app.repair.models import (
+    CreateEvidenceRepairPlanRequest,
+    CreateRepairPlanRequest,
+    EvidenceRepairPlan,
+    PlanExecutionStatus,
+    PlanRevision,
+    RepairPlan,
+)
 from app.repair.tools import create_repair_plan_tools
 from app.schemas.agent import AnalyzeResponse
 from app.tools.build_tools import create_build_tools
@@ -766,6 +780,9 @@ def build_agent_graph(
         latest_patch_diff = state.get("latest_patch_diff", "")
         last_failure_summary = state.get("last_failure_summary")
         last_progress_event = state.get("last_progress_event")
+        plan_status_events: list[PlanStatusEvent] = []
+        validation_errors: list[str] = []
+        evidence_sufficient_step = state.get("evidence_sufficient_step")
         tool_events: list[ToolEvent] = []
         calls = getattr(last, "tool_calls", None) or []
         patch_requested = any(call.get("name") == "apply_patch" for call in calls)
@@ -780,6 +797,39 @@ def build_agent_graph(
             invocation_succeeded = False
             if tool is None:
                 content = f"[tool error] 未知工具：{name}（可用工具：{', '.join(sorted(tools_by_name))}）"
+            elif (
+                capabilities.evidence_commitment
+                and name == "apply_patch"
+                and repair_plan is not None
+                and not plan_stale
+                and not EvidenceCommitmentController.patch_matches_plan(
+                    args,
+                    repair_plan,
+                )
+            ):
+                validation_errors.append("patch_target_mismatch")
+                content = (
+                    "[commitment required] apply_patch 目标与当前 Repair Plan "
+                    "不一致。请修订 Plan，或只修改计划中的文件。"
+                )
+            elif (
+                capabilities.evidence_commitment
+                and name in EXPLORATION_TOOLS
+                and isinstance(repair_plan, EvidenceRepairPlan)
+                and not plan_stale
+                and not repair_plan.hypothesis.unresolved_questions
+                and not EvidenceCommitmentController.exploration_is_directed(
+                    str(name),
+                    args,
+                    repair_plan,
+                )
+            ):
+                validation_errors.append("broad_exploration_blocked")
+                content = (
+                    "[commitment required] 当前 Plan 没有 unresolved question。"
+                    "禁止继续大范围探索；请执行计划中的 Patch，"
+                    "或提供具体 unresolved_question 后修订 Plan。"
+                )
             elif (
                 capabilities.repair_loop
                 and
@@ -836,6 +886,13 @@ def build_agent_graph(
                         )
                         if has_seen_test_failure:
                             repair_rounds += 1
+                        plan_status_events.append(
+                            PlanStatusEvent(
+                                step=max(state["step_count"], 1),
+                                status=PlanExecutionStatus.PATCH_APPLIED,
+                                reason="successful apply_patch",
+                            )
+                        )
                         last_progress_event = (
                             f"step {max(state['step_count'], 1)}: apply_patch"
                         )
@@ -846,11 +903,67 @@ def build_agent_graph(
                     logger.warning("Could not parse apply_patch result: %s", content[:500])
             elif invocation_succeeded and name == "create_repair_plan":
                 try:
-                    request = CreateRepairPlanRequest.model_validate_json(content)
-                    plan = RepairPlan.model_validate(
-                        request.model_dump(exclude={"revision_reason"})
+                    request_class = (
+                        CreateEvidenceRepairPlanRequest
+                        if capabilities.evidence_commitment
+                        else CreateRepairPlanRequest
                     )
+                    request = request_class.model_validate_json(content)
+                    if isinstance(request, CreateEvidenceRepairPlanRequest):
+                        plan = EvidenceRepairPlan.model_validate(
+                            request.model_dump(
+                                exclude={"revision_reason"}
+                            )
+                        )
+                        evidence_errors = (
+                            EvidenceCommitmentController.validate_evidence_plan(
+                                request,
+                                [
+                                    *state.get("tool_events", []),
+                                    *tool_events,
+                                ],
+                                has_seen_test_failure=(
+                                    has_seen_test_failure
+                                ),
+                            )
+                        )
+                        if evidence_errors:
+                            validation_errors.extend(evidence_errors)
+                            invocation_succeeded = False
+                            content = (
+                                "[commitment required] RepairHypothesis "
+                                "validation failed: "
+                                + "; ".join(evidence_errors[:5])
+                            )
+                            raise ValueError("evidence validation failed")
+                        plan = EvidenceRepairPlan.model_validate(
+                            request.model_dump(
+                                exclude={"revision_reason"}
+                            )
+                        )
+                    else:
+                        plan = RepairPlan.model_validate(
+                            request.model_dump(
+                                exclude={"revision_reason"}
+                            )
+                        )
                     reason = request.revision_reason or "initial plan"
+                    if repair_plan is not None:
+                        plan_status_events.append(
+                            PlanStatusEvent(
+                                step=max(state["step_count"], 1),
+                                status=PlanExecutionStatus.REVISED,
+                                reason=reason,
+                            )
+                        )
+                    else:
+                        plan_status_events.append(
+                            PlanStatusEvent(
+                                step=max(state["step_count"], 1),
+                                status=PlanExecutionStatus.PROPOSED,
+                                reason=reason,
+                            )
+                        )
                     revision_number = (
                         len(state.get("plan_revisions", []))
                         + len(plan_revisions)
@@ -880,6 +993,13 @@ def build_agent_graph(
                     )
                     repair_plan = plan
                     plan_stale = False
+                    plan_status_events.append(
+                        PlanStatusEvent(
+                            step=max(state["step_count"], 1),
+                            status=PlanExecutionStatus.COMMITTED,
+                            reason=reason,
+                        )
+                    )
                     last_progress_event = (
                         f"step {max(state['step_count'], 1)}: create_repair_plan"
                     )
@@ -891,6 +1011,14 @@ def build_agent_graph(
             elif invocation_succeeded and name == "run_tests":
                 try:
                     latest_test = TestRunResult.model_validate_json(content)
+                    if repair_plan is not None:
+                        plan_status_events.append(
+                            PlanStatusEvent(
+                                step=max(state["step_count"], 1),
+                                status=PlanExecutionStatus.VERIFYING,
+                                reason="explicit test run",
+                            )
+                        )
                     last_progress_event = (
                         f"step {max(state['step_count'], 1)}: run_tests"
                     )
@@ -898,8 +1026,24 @@ def build_agent_graph(
                         has_seen_test_failure = True
                         plan_stale = True
                         last_failure_summary = _test_failure_summary(latest_test)
+                        if repair_plan is not None:
+                            plan_status_events.append(
+                                PlanStatusEvent(
+                                    step=max(state["step_count"], 1),
+                                    status=PlanExecutionStatus.REJECTED,
+                                    reason="explicit test failed",
+                                )
+                            )
                     else:
                         explicit_test_passed = True
+                        if repair_plan is not None:
+                            plan_status_events.append(
+                                PlanStatusEvent(
+                                    step=max(state["step_count"], 1),
+                                    status=PlanExecutionStatus.COMPLETED,
+                                    reason="explicit test passed",
+                                )
+                            )
                 except ValueError:
                     logger.warning("Could not parse run_tests result: %s", content[:500])
             tool_invoked = (
@@ -958,6 +1102,13 @@ def build_agent_graph(
             tool_messages.append(
                 AIMessage(content="", tool_calls=[auto_call])
             )
+            plan_status_events.append(
+                PlanStatusEvent(
+                    step=max(state["step_count"], 1),
+                    status=PlanExecutionStatus.VERIFYING,
+                    reason="automatic test after patch",
+                )
+            )
             try:
                 auto_content = str(run_tests_tool.invoke({"tool": "maven"}))
                 latest_test = TestRunResult.model_validate_json(auto_content)
@@ -968,6 +1119,21 @@ def build_agent_graph(
                     has_seen_test_failure = True
                     plan_stale = True
                     last_failure_summary = _test_failure_summary(latest_test)
+                    plan_status_events.append(
+                        PlanStatusEvent(
+                            step=state["step_count"],
+                            status=PlanExecutionStatus.REJECTED,
+                            reason="automatic test failed",
+                        )
+                    )
+                else:
+                    plan_status_events.append(
+                        PlanStatusEvent(
+                            step=state["step_count"],
+                            status=PlanExecutionStatus.COMPLETED,
+                            reason="automatic test passed",
+                        )
+                    )
             except Exception as exc:
                 logger.exception("Automatic Maven test failed to execute")
                 auto_content = f"[tool error] 自动 Maven 测试执行失败：{exc}"
@@ -1019,6 +1185,32 @@ def build_agent_graph(
         else:
             termination_reason = None
 
+        evidence_prompt_sent = state.get("evidence_prompt_sent", False)
+        if (
+            capabilities.evidence_commitment
+            and not evidence_prompt_sent
+            and repair_plan is None
+        ):
+            all_events = [
+                *state.get("tool_events", []),
+                *tool_events,
+            ]
+            readiness = EvidenceCommitmentController.readiness(
+                all_events,
+                has_seen_test_failure=has_seen_test_failure,
+                current_step=state["step_count"],
+            )
+            if readiness.sufficient:
+                tool_messages.append(
+                    HumanMessage(
+                        content=EvidenceCommitmentController.evidence_prompt(
+                            readiness
+                        )
+                    )
+                )
+                evidence_prompt_sent = True
+                evidence_sufficient_step = state["step_count"]
+
         logger.info(
             "Executed %d message(s) (step %d, auto_test=%s)",
             len(tool_messages),
@@ -1041,6 +1233,10 @@ def build_agent_graph(
             "tool_events": tool_events,
             "last_progress_event": last_progress_event,
             "termination_reason": termination_reason,
+            "plan_status_events": plan_status_events,
+            "evidence_prompt_sent": evidence_prompt_sent,
+            "evidence_sufficient_step": evidence_sufficient_step,
+            "commitment_validation_errors": validation_errors,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -1079,6 +1275,7 @@ async def run_agent(
     context_lifecycle_compaction: bool = False,
     test_runner: Callable | None = None,
     step_budget_policy: str | StepBudgetPolicy | None = None,
+    evidence_commitment: bool = False,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -1087,7 +1284,10 @@ async def run_agent(
     omitted it is built from settings, which requires LLM_* in .env.
     """
     resolved_profile = resolve_profile(profile)
-    capabilities = capabilities_for(resolved_profile)
+    capabilities = replace(
+        capabilities_for(resolved_profile),
+        evidence_commitment=evidence_commitment,
+    )
     budget_policy = (
         step_budget_policy
         if isinstance(step_budget_policy, StepBudgetPolicy)
@@ -1112,6 +1312,7 @@ async def run_agent(
                 workspace_id,
                 repository_path,
                 manager=workspace_manager,
+                require_evidence=capabilities.evidence_commitment,
             )
         tools += create_patch_tools(
             workspace_id,
@@ -1157,6 +1358,10 @@ async def run_agent(
         "budget_extensions": [],
         "termination_reason": None,
         "last_progress_event": None,
+        "plan_status_events": [],
+        "evidence_prompt_sent": False,
+        "evidence_sufficient_step": None,
+        "commitment_validation_errors": [],
     }
 
     logger.info(
@@ -1193,6 +1398,20 @@ async def run_agent(
     repair_plan = result.get("repair_plan")
     plan_revisions = result.get("plan_revisions", [])
     budget_telemetry = _step_budget_telemetry(budget_policy, result)
+    commitment_telemetry = EvidenceCommitmentController.build_telemetry(
+        evidence_commitment=capabilities.evidence_commitment,
+        tool_events=tool_events,
+        plan_revisions=plan_revisions,
+        plan_status_history=list(result.get("plan_status_events", [])),
+        evidence_sufficient_step=result.get("evidence_sufficient_step"),
+        final_test_passed=bool(latest_test and latest_test.success),
+        has_seen_test_failure=bool(
+            result.get("has_seen_test_failure", False)
+        ),
+        validation_errors=list(
+            result.get("commitment_validation_errors", [])
+        ),
+    )
     final_diff = ""
     if workspace_id and modified_files:
         try:
@@ -1270,4 +1489,5 @@ async def run_agent(
         repair_plan=repair_plan,
         plan_revisions=plan_revisions,
         budget_telemetry=budget_telemetry,
+        commitment_telemetry=commitment_telemetry,
     )

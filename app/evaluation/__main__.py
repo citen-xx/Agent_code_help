@@ -38,6 +38,7 @@ from app.evaluation.phase6_5 import (
     regenerate_phase6_5_report,
     run_phase6_5,
 )
+from app.evaluation.phase7 import regenerate_phase7_report, run_phase7
 from app.evaluation.runner import BenchmarkRunner
 from app.evaluation.tasks import DEFAULT_RESULTS_DIR, load_tasks
 
@@ -284,6 +285,30 @@ def _parser() -> argparse.ArgumentParser:
         "--output-dir",
         default=str(DEFAULT_RESULTS_DIR),
     )
+    phase7 = subparsers.add_parser(
+        "phase7",
+        help="Run the evidence-driven repair commitment experiment",
+    )
+    phase7.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    phase7.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
+    phase7_report = subparsers.add_parser(
+        "phase7-report",
+        help="Regenerate the evidence-driven commitment report",
+    )
+    phase7_report.add_argument(
+        "--tasks-file",
+        default=str(DEFAULT_DEFECTS4J_TASKS_FILE),
+    )
+    phase7_report.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_RESULTS_DIR),
+    )
     return parser
 
 
@@ -449,6 +474,20 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=Path(args.output_dir),
         )
         print(f"Phase 6.5 report: {report}")
+        return 0
+    if args.command == "phase7":
+        report = run_phase7(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 7 report: {report}")
+        return 0
+    if args.command == "phase7-report":
+        report = regenerate_phase7_report(
+            tasks_file=args.tasks_file,
+            output_dir=Path(args.output_dir),
+        )
+        print(f"Phase 7 report: {report}")
         return 0
     tasks = load_tasks(task_id=args.task, suite=args.suite)
     runner = BenchmarkRunner(

@@ -40,21 +40,25 @@ def test_profile_capability_ladder():
         "code_intelligence": False,
         "repair_planner": False,
         "repair_loop": False,
+        "evidence_commitment": False,
     }
     assert capabilities_for(AgentProfile.CODE_INTELLIGENCE).as_dict() == {
         "code_intelligence": True,
         "repair_planner": False,
         "repair_loop": False,
+        "evidence_commitment": False,
     }
     assert capabilities_for(AgentProfile.PLANNER).as_dict() == {
         "code_intelligence": True,
         "repair_planner": True,
         "repair_loop": False,
+        "evidence_commitment": False,
     }
     assert capabilities_for(AgentProfile.FULL).as_dict() == {
         "code_intelligence": True,
         "repair_planner": True,
         "repair_loop": True,
+        "evidence_commitment": False,
     }
     assert set(PROFILE_CAPABILITIES) == set(AgentProfile)
 

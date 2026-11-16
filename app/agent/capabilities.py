@@ -16,12 +16,14 @@ class AgentCapabilities:
     code_intelligence: bool
     repair_planner: bool
     repair_loop: bool
+    evidence_commitment: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
             "code_intelligence": self.code_intelligence,
             "repair_planner": self.repair_planner,
             "repair_loop": self.repair_loop,
+            "evidence_commitment": self.evidence_commitment,
         }
 
 

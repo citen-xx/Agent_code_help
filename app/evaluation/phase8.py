@@ -253,7 +253,15 @@ def _run_variant(
     path = phase_dir / "runs" / run_id / "report.json"
     if path.is_file():
         report = _load_report(path)
-        if report.capabilities.get("hypothesis_quality", False) is quality:
+        if (
+            len(report.results) == len(tasks)
+            and report.capabilities.get("hypothesis_quality", False) is quality
+            and not any(
+                result.failure_category
+                and result.failure_category.value == "infrastructure_error"
+                for result in report.results
+            )
+        ):
             return report
     runner = BenchmarkRunner(
         tasks,
@@ -712,3 +720,148 @@ def regenerate_phase8_report(
     )
     payload["conclusion"] = _conclusion(payload)
     return _write_artifacts(phase_dir, payload)
+
+
+def write_phase8_infrastructure_status(
+    *,
+    output_dir: str | Path = DEFAULT_RESULTS_DIR,
+    provider_error: str = "402 Insufficient Balance",
+) -> Path:
+    """Write an honest blocked status without counting partial runs."""
+    phase_dir = _phase_dir(output_dir)
+    source = json.loads(
+        (phase_dir / "source_manifest.json").read_text(encoding="utf-8")
+    )
+    control_path = (
+        phase_dir / "runs" / "phase8_control_run1" / "report.json"
+    )
+    control = _load_report(control_path)
+    if len(control.results) != 15:
+        raise RuntimeError("Control R1 is incomplete")
+    aborted_path = (
+        phase_dir
+        / "aborted_runs"
+        / "phase8_treatment_run1_402"
+        / "report.json"
+    )
+    aborted = _load_report(aborted_path)
+    holdout_manifest = json.loads(
+        (phase_dir / "holdout_manifest.json").read_text(encoding="utf-8")
+    )
+    task_level = {
+        "status": "infrastructure_blocked",
+        "official_ab_comparison_available": False,
+        "control_run1": {
+            "complete": True,
+            "summary": control.summary.model_dump(mode="json"),
+            "results": [
+                result.model_dump(mode="json")
+                for result in control.results
+            ],
+        },
+        "treatment_run1_aborted": {
+            "complete": False,
+            "results_completed": len(aborted.results),
+            "results": [
+                result.model_dump(mode="json")
+                for result in aborted.results
+            ],
+            "exclude_from_official_statistics": True,
+        },
+    }
+    v1 = {
+        "status": "infrastructure_blocked",
+        "provider_error": provider_error,
+        "official_ab_comparison_available": False,
+        "reason": (
+            "Treatment reached 402 Insufficient Balance before the minimum "
+            "two complete runs per variant. Partial results must not be "
+            "counted as Agent failures."
+        ),
+        "completed_runs": 1,
+        "required_runs_per_variant": 2,
+        "task_level": task_level,
+    }
+    holdout = {
+        "status": "not_run_after_infrastructure_block",
+        "official_result_available": False,
+        "manifest": holdout_manifest,
+        "reason": (
+            "Holdout execution was intentionally not started after the "
+            "provider balance failure."
+        ),
+    }
+    payload = {
+        "schema_version": 1,
+        "phase": "8",
+        "status": "infrastructure_blocked",
+        "source": source,
+        "design": DESIGN,
+        "hypothesis_quality_audit": (
+            phase_dir / "hypothesis_quality_audit.md"
+        ).read_text(encoding="utf-8"),
+        "defects4j_v1": v1,
+        "holdout": holdout,
+        "acceptance": {
+            "development_pass": False,
+            "holdout_pass": False,
+            "default_capability_recommended": False,
+        },
+        "conclusion": (
+            "Phase 8 capability implementation, audit, tests, and frozen "
+            "holdout are complete, but controlled validation is blocked by "
+            "provider balance. No default-capability decision can be made."
+        ),
+    }
+    _write_json(phase_dir / "defects4j_v1_experiment.json", v1)
+    _write_json(phase_dir / "holdout_experiment.json", holdout)
+    _write_json(phase_dir / "task_level_analysis.json", task_level)
+    _write_json(phase_dir / "phase8_report.json", payload)
+    _write(phase_dir / "hypothesis_quality_design.md", DESIGN)
+    report = "\n".join(
+        [
+            "# Phase 8 Evidence-grounded Hypothesis Quality",
+            "",
+            "## Status",
+            "",
+            f"`infrastructure_blocked`: {provider_error}.",
+            "",
+            "This is not an Agent failure and partial runs are excluded from "
+            "official statistics.",
+            "",
+            "## Completed Work",
+            "",
+            "- Evidence-aware Hypothesis implementation and tests completed.",
+            "- Phase 7 structural/cross-file audit completed.",
+            "- V2 Holdout candidate reproduction and manifest freeze completed.",
+            f"- V1 Control R1 completed: {control.summary.passed_tasks}/"
+            f"{control.summary.total_tasks}.",
+            f"- Treatment R1 aborted after {len(aborted.results)} tasks.",
+            "",
+            "## Holdout",
+            "",
+            f"Frozen tasks: {holdout_manifest['task_count']}; hash: "
+            f"`{holdout_manifest['tasks_sha256']}`. Holdout execution did not "
+            "start after the infrastructure failure.",
+            "",
+            "## Decision",
+            "",
+            "No default-capability decision is possible. The current production "
+            "default remains unchanged.",
+            "",
+            "## Required Resume",
+            "",
+            "After provider balance is restored, rerun `phase8`; completed "
+            "Control R1 can be reused while the partial Treatment run is "
+            "ignored.",
+            "",
+            "## Recommended Next Step",
+            "",
+            "Phase 9: Production Readiness & Portfolio Delivery after the "
+            "blocked Phase 8 validation is completed.",
+            "",
+        ]
+    )
+    path = phase_dir / "phase8_report.md"
+    _write(path, report)
+    return path

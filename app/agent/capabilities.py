@@ -17,6 +17,7 @@ class AgentCapabilities:
     repair_planner: bool
     repair_loop: bool
     evidence_commitment: bool = False
+    hypothesis_quality: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -24,6 +25,7 @@ class AgentCapabilities:
             "repair_planner": self.repair_planner,
             "repair_loop": self.repair_loop,
             "evidence_commitment": self.evidence_commitment,
+            "hypothesis_quality": self.hypothesis_quality,
         }
 
 

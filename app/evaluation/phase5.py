@@ -384,25 +384,48 @@ def prepare_defects4j_workspace(
             "apply",
             "--whitespace=nowarn",
         ]
-        applied = subprocess.run(
-            [*base_command, "-R", str(patch_path)],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if applied.returncode != 0:
+        patch_text = patch_path.read_text(encoding="utf-8")
+        if not patch_text.strip():
+            applied = subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+        else:
             applied = subprocess.run(
-                [*base_command, str(patch_path)],
+                [*base_command, "-R", str(patch_path)],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
+            if applied.returncode != 0:
+                applied = subprocess.run(
+                    [*base_command, str(patch_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            if applied.returncode != 0:
+                applied = subprocess.run(
+                    [*base_command, "--recount", str(patch_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+            if applied.returncode != 0:
+                applied = subprocess.run(
+                    [*base_command, "--3way", str(patch_path)],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
         if applied.returncode != 0:
             raise RuntimeError(
                 "Failed to apply Defects4J test patch: "
                 f"{applied.stderr.strip()}"
             )
-        changed = True
+        changed = bool(patch_text.strip())
     else:
         changed = False
     for pom in repository_path.rglob("pom.xml"):
@@ -585,6 +608,7 @@ def reproduce_tasks(
             with tempfile.TemporaryDirectory(
                 prefix=f"repro-{task.task_id}-",
                 dir=work_root,
+                ignore_cleanup_errors=True,
             ) as temporary:
                 root = Path(temporary)
                 buggy = root / "buggy"

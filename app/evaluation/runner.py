@@ -83,6 +83,7 @@ class BenchmarkRunner:
         max_steps: int = 20,
         step_budget_policy: str | StepBudgetPolicy | None = None,
         evidence_commitment: bool = False,
+        hypothesis_quality: bool = False,
     ):
         self.tasks = tasks
         self.output_dir = Path(output_dir)
@@ -97,9 +98,11 @@ class BenchmarkRunner:
         self.model_name = model_name or settings.LLM_MODEL or "unknown"
         self.profile = resolve_profile(profile)
         self.evidence_commitment = evidence_commitment
+        self.hypothesis_quality = hypothesis_quality
         self.capabilities = replace(
             capabilities_for(self.profile),
-            evidence_commitment=evidence_commitment,
+            evidence_commitment=evidence_commitment or hypothesis_quality,
+            hypothesis_quality=hypothesis_quality,
         )
         self.context_lifecycle_compaction = context_lifecycle_compaction
         self.max_steps = max_steps
@@ -148,6 +151,7 @@ class BenchmarkRunner:
             max_steps=self.max_steps,
             step_budget_policy=self.step_budget_policy,
             evidence_commitment=self.evidence_commitment,
+            hypothesis_quality=self.hypothesis_quality,
         )
         return AgentRunOutput(
             response=response,

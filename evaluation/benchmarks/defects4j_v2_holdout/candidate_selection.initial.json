@@ -1,0 +1,655 @@
+{
+  "schema_version": 1,
+  "benchmark": "defects4j_v2_holdout",
+  "generated_at": "2026-11-16T09:10:47.173989+00:00",
+  "defects4j_commit": "8c16da8230843cdc918eaf4ddb449637f02b83c6",
+  "candidate_count": 42,
+  "selection_note": "Candidates were selected from official metadata by project diversity, non-overlap with V1 bug IDs, and source-patch complexity. Agent outcomes were not consulted.",
+  "candidates": [
+    {
+      "task_id": "d4j-v2-cli-1",
+      "project": "Cli",
+      "bug_id": 1,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "src/java/org/apache/commons/cli/CommandLine.java"
+      ],
+      "patch_hunk_count": 10,
+      "relevant_test_count": 11,
+      "buggy_revision": "8f46f467a33ace44ccd9f394910940b6c48a3827",
+      "fixed_revision": "b0e1b80b6d4a10a9c9f46539bc4c7a3cce55886e",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-cli-5",
+      "project": "Cli",
+      "bug_id": 5,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/cli/Util.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 16,
+      "buggy_revision": "2b0a94aee899d9e7d855c402ad40eb4e318f46e7",
+      "fixed_revision": "3880640ee6268a2ecb2912e1ae896153dc2229e5",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-cli-7",
+      "project": "Cli",
+      "bug_id": 7,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/java/org/apache/commons/cli2/builder/PatternBuilder.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 1,
+      "buggy_revision": "73276486b1f39510bf27cb6c0684da805b121f5d",
+      "fixed_revision": "4ee0d6c4f1b553858aeabf3ee6fb37d764f263e2",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-cli-8",
+      "project": "Cli",
+      "bug_id": 8,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/cli/HelpFormatter.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 3,
+      "buggy_revision": "6a6bb48840aa0043200a5d9f6fffea47aea1a8db",
+      "fixed_revision": "4f407378c93b9e2a8e24c855e8bed5eb12bf7a06",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-cli-10",
+      "project": "Cli",
+      "bug_id": 10,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/java/org/apache/commons/cli/Parser.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 16,
+      "buggy_revision": "d0f6128191443bbf49e1c9fde616f87c16486db4",
+      "fixed_revision": "d72a578a8949e4b1c437ec55997d8786836f139c",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-1",
+      "project": "Codec",
+      "bug_id": 1,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/java/org/apache/commons/codec/language/Caverphone.java",
+        "src/java/org/apache/commons/codec/language/Metaphone.java",
+        "src/java/org/apache/commons/codec/language/SoundexUtils.java"
+      ],
+      "patch_hunk_count": 3,
+      "relevant_test_count": 6,
+      "buggy_revision": "9c0cabead7cf075308b11362172ae1a48d41321c",
+      "fixed_revision": "52d82d1dfff8c2b2ded9d843e0b03017af6d747c",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-2",
+      "project": "Codec",
+      "bug_id": 2,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/codec/binary/Base64.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 4,
+      "buggy_revision": "2f7454a01e4c2992bffc3d86137e632e80c5027f",
+      "fixed_revision": "b8c2d9d9dc9aab45f83cf49ac93cfa8546e4c08e",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-3",
+      "project": "Codec",
+      "bug_id": 3,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/codec/language/DoubleMetaphone.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 3,
+      "buggy_revision": "d7b01850ef418b1d261cdb2029f8f85ab4031553",
+      "fixed_revision": "a5dfe5cbc95d7f3ce0b4829756690c2cb8439f4c",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-4",
+      "project": "Codec",
+      "bug_id": 4,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/codec/binary/Base64.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 5,
+      "buggy_revision": "38ba13232cb37374e3c333e2121ebad8a793935c",
+      "fixed_revision": "bcfef8906931a7929a6db14b9d82d387fd3f17f6",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-10",
+      "project": "Codec",
+      "bug_id": 10,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/java/org/apache/commons/codec/language/Caverphone.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 1,
+      "buggy_revision": "2a8fd84f1f380fc472ecf415b771cb5fd789719b",
+      "fixed_revision": "41c68e9ef470696009d72133c7f05a20e2728e34",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-13",
+      "project": "Codec",
+      "bug_id": 13,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/binary/CharSequenceUtils.java",
+        "src/main/java/org/apache/commons/codec/binary/StringUtils.java",
+        "src/main/java/org/apache/commons/codec/language/DoubleMetaphone.java"
+      ],
+      "patch_hunk_count": 4,
+      "relevant_test_count": 17,
+      "buggy_revision": "8c145775da55fb33104751199a28809acb657c1f",
+      "fixed_revision": "37ba197e62d6b60037d18afc33801e6221f1b8c6",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-14",
+      "project": "Codec",
+      "bug_id": 14,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/language/bm/Lang.java",
+        "src/main/java/org/apache/commons/codec/language/bm/PhoneticEngine.java",
+        "src/main/java/org/apache/commons/codec/language/bm/Rule.java",
+        "src/main/resources/org/apache/commons/codec/language/bm/ash_lang.txt",
+        "src/main/resources/org/apache/commons/codec/language/bm/gen_lang.txt",
+        "src/main/resources/org/apache/commons/codec/language/bm/sep_lang.txt"
+      ],
+      "patch_hunk_count": 8,
+      "relevant_test_count": 4,
+      "buggy_revision": "50a1d17b5402accbdd59e62e68fa96172c9e3764",
+      "fixed_revision": "39d5df29fb768fd257f9d328b99f00bc69ec864a",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-15",
+      "project": "Codec",
+      "bug_id": 15,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/language/Soundex.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 2,
+      "buggy_revision": "8fc193527df27beeeb638e6e812e8c4df6c72f46",
+      "fixed_revision": "28b7b958d39730fc278fd1919bf335c52133a1a2",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-16",
+      "project": "Codec",
+      "bug_id": 16,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/binary/Base32.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 3,
+      "buggy_revision": "38357dffa2dd39c91c4523beade08c12e8009acb",
+      "fixed_revision": "c82fe35c48bd0082c16644d16d82d1be79d6b9d1",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-17",
+      "project": "Codec",
+      "bug_id": 17,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/binary/StringUtils.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 17,
+      "buggy_revision": "1a4d9cc2572d220664f1b7c377cd318cd253052e",
+      "fixed_revision": "d2f27093d7d95a07da901902f894d88b4ecc3e95",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-codec-18",
+      "project": "Codec",
+      "bug_id": 18,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/apache/commons/codec/binary/StringUtils.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 17,
+      "buggy_revision": "ca30fae3acb59a5caef3c3c21eecae7c928827e0",
+      "fixed_revision": "5ef5bd199a4e3df74479b4b363fa29b0b3092547",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-gson-1",
+      "project": "Gson",
+      "bug_id": 1,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "gson/src/main/java/com/google/gson/TypeInfoFactory.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 35,
+      "buggy_revision": "4413c299ea09c57b94af8647eec901554c2f5c50",
+      "fixed_revision": "c6a4f55d1a9b191dbbd958c366091e567191ccab",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-gson-2",
+      "project": "Gson",
+      "bug_id": 2,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 66,
+      "buggy_revision": "10714ef0427536b679e9677f8417807e4cce017d",
+      "fixed_revision": "fe101c10bc3597d8e715a31d94d2cc0cc54b660f",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-gson-11",
+      "project": "Gson",
+      "bug_id": 11,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "gson/src/main/java/com/google/gson/internal/bind/TypeAdapters.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 73,
+      "buggy_revision": "791236ac79e535146b07a7dd5c85ab168554f5ff",
+      "fixed_revision": "44cad04a639b3a53f4205f93acda37b3f7d10871",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-gson-12",
+      "project": "Gson",
+      "bug_id": 12,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "gson/src/main/java/com/google/gson/internal/bind/JsonTreeReader.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 74,
+      "buggy_revision": "7719e73a108c450666613c279bedaed724cd9cc9",
+      "fixed_revision": "9e6f2bab20257b6823a5b753739f047d79e9dcbd",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jacksonxml-1",
+      "project": "JacksonXml",
+      "bug_id": 1,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/com/fasterxml/jackson/dataformat/xml/deser/FromXmlParser.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 47,
+      "buggy_revision": "81f38e1985bdfafdbe02e32dfb5ccb200fc64eae",
+      "fixed_revision": "2d7683ed820116b77cba9b4b290cd7ce7dfa5cf4",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jacksonxml-2",
+      "project": "JacksonXml",
+      "bug_id": 2,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "src/main/java/com/fasterxml/jackson/dataformat/xml/deser/XmlTokenStream.java"
+      ],
+      "patch_hunk_count": 4,
+      "relevant_test_count": 37,
+      "buggy_revision": "a96d27d4c74707965b257b6ecced4d337357545e",
+      "fixed_revision": "37eb331acce08142ad027f127c355f9b462fe9e0",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jacksonxml-3",
+      "project": "JacksonXml",
+      "bug_id": 3,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/com/fasterxml/jackson/dataformat/xml/deser/FromXmlParser.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 50,
+      "buggy_revision": "23ab583c46a6a20b0c1232ebb91b16d4058c7502",
+      "fixed_revision": "79a4b57f2bbe08ce46e6dabb0a8b76f4a787141c",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jacksonxml-4",
+      "project": "JacksonXml",
+      "bug_id": 4,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/com/fasterxml/jackson/dataformat/xml/ser/XmlSerializerProvider.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 50,
+      "buggy_revision": "4c6a8b996ac608251fa63286d6c322251910ca63",
+      "fixed_revision": "2c5f6f4e0f7bbcfa566fbc91ee57baf8dd7a371a",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jacksonxml-5",
+      "project": "JacksonXml",
+      "bug_id": 5,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/com/fasterxml/jackson/dataformat/xml/ser/XmlSerializerProvider.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 59,
+      "buggy_revision": "ce61138456e10580c6bf78bc4009de926105c4d6",
+      "fixed_revision": "8aa276ba6b2092a562195f9a94eb562686a3352c",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-10",
+      "project": "Jsoup",
+      "bug_id": 10,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Node.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 13,
+      "buggy_revision": "9dcc488f3c6afb691e49af42755cfd61b0a69d04",
+      "fixed_revision": "adce18ec3d06b849886d203fe932205f312cc37f",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-20",
+      "project": "Jsoup",
+      "bug_id": 20,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/jsoup/helper/DataUtil.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 3,
+      "buggy_revision": "2c257f6482dd7a9583538b7b0d4b3b0bef9417fd",
+      "fixed_revision": "1d31086acba06579c4e7d5928dbba9ca8a0128b1",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-30",
+      "project": "Jsoup",
+      "bug_id": 30,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/safety/Cleaner.java"
+      ],
+      "patch_hunk_count": 3,
+      "relevant_test_count": 1,
+      "buggy_revision": "381ce3d861251ae35aea636fc29c277a84060276",
+      "fixed_revision": "dfac9ce465ff9c988904d05014d2be2715aa1d2b",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-40",
+      "project": "Jsoup",
+      "bug_id": 40,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/DocumentType.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 17,
+      "buggy_revision": "1837ecbcdbafd051fab6a37e2540bda054e52151",
+      "fixed_revision": "b033535fe2cf887de8076221a0d614abfcf17d7b",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-50",
+      "project": "Jsoup",
+      "bug_id": 50,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/helper/DataUtil.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 6,
+      "buggy_revision": "cc19d3029ab0db137da0e95cc55c20b131241cf1",
+      "fixed_revision": "c3cbe1b64e7f66ff9f9b53f1388eb135e6693187",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-60",
+      "project": "Jsoup",
+      "bug_id": 60,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/parser/TokenQueue.java",
+        "src/main/java/org/jsoup/select/QueryParser.java"
+      ],
+      "patch_hunk_count": 2,
+      "relevant_test_count": 18,
+      "buggy_revision": "c221cc8ab03fe7a88982cdddb9e66cff546d29df",
+      "fixed_revision": "8fecf72da0c9d1d6da7ec1aab0214ff68588da88",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-70",
+      "project": "Jsoup",
+      "bug_id": 70,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Element.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 25,
+      "buggy_revision": "4d78e0316e1eae331bc0b460f367ce878688d6d2",
+      "fixed_revision": "aeaf3c1a03fe4d5bfda4d63824a1f97dcec42e74",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-75",
+      "project": "Jsoup",
+      "bug_id": 75,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Attributes.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 26,
+      "buggy_revision": "64eef180f610d0dad97873f6786b103700ddb8b2",
+      "fixed_revision": "f627193ce0950f0d55ed1b4f6a2fe9973447853a",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-80",
+      "project": "Jsoup",
+      "bug_id": 80,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/parser/XmlTreeBuilder.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 24,
+      "buggy_revision": "47a7f5ab2a22a2ce526f96e0cf9f2c46511c56d9",
+      "fixed_revision": "e9feec90dbd3e428dc1930c3b5efbd9271160d01",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-84",
+      "project": "Jsoup",
+      "bug_id": 84,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/jsoup/helper/W3CDom.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 1,
+      "buggy_revision": "bdf1df7eb3ca76cdcdaca38f7df5d941bbb1c664",
+      "fixed_revision": "a810d2e3615da9a37ad74a7db2ca8bc6945ab9a8",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-85",
+      "project": "Jsoup",
+      "bug_id": 85,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Attribute.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 27,
+      "buggy_revision": "49c4a148b7817ed424e8cf823ae601863fec31ce",
+      "fixed_revision": "25ba713e1d1a97ebfee38c0df3e7e6d4d9615f97",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-88",
+      "project": "Jsoup",
+      "bug_id": 88,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Attribute.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 28,
+      "buggy_revision": "8adcd55d8abe4c84ae2dcffb9a882abc4143bb93",
+      "fixed_revision": "8b837a43cbe2c12624ab2088dc4ff9a725af5f4d",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-89",
+      "project": "Jsoup",
+      "bug_id": 89,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Attribute.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 28,
+      "buggy_revision": "8b837a43cbe2c12624ab2088dc4ff9a725af5f4d",
+      "fixed_revision": "1d663eeb1c0d1c08bcfe5d30f05170768bb0438e",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-90",
+      "project": "Jsoup",
+      "bug_id": 90,
+      "status": "candidate",
+      "difficulty": "local",
+      "source_files": [
+        "src/main/java/org/jsoup/helper/HttpConnection.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 3,
+      "buggy_revision": "315655cc11c9d49bb821dd800d45580696b02185",
+      "fixed_revision": "7de614ffd01161d8718d7458bab9d9690ad2334f",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-91",
+      "project": "Jsoup",
+      "bug_id": 91,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/UncheckedIOException.java",
+        "src/main/java/org/jsoup/parser/CharacterReader.java"
+      ],
+      "patch_hunk_count": 3,
+      "relevant_test_count": 28,
+      "buggy_revision": "7de614ffd01161d8718d7458bab9d9690ad2334f",
+      "fixed_revision": "247c5d05f4529e55aa1fdbd333f99e323809b5e0",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-92",
+      "project": "Jsoup",
+      "bug_id": 92,
+      "status": "candidate",
+      "difficulty": "structural",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/Attributes.java",
+        "src/main/java/org/jsoup/parser/HtmlTreeBuilder.java",
+        "src/main/java/org/jsoup/parser/ParseSettings.java",
+        "src/main/java/org/jsoup/parser/Token.java",
+        "src/main/java/org/jsoup/parser/XmlTreeBuilder.java"
+      ],
+      "patch_hunk_count": 8,
+      "relevant_test_count": 30,
+      "buggy_revision": "27a445b029b02bced263a0686f40a4f373827953",
+      "fixed_revision": "0fc3d6728ae270fb38f9778ad7fa2663060b50c7",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    },
+    {
+      "task_id": "d4j-v2-jsoup-93",
+      "project": "Jsoup",
+      "bug_id": 93,
+      "status": "candidate",
+      "difficulty": "cross_file",
+      "source_files": [
+        "src/main/java/org/jsoup/nodes/FormElement.java"
+      ],
+      "patch_hunk_count": 1,
+      "relevant_test_count": 26,
+      "buggy_revision": "e9e613706443fd1cd3458d1e5116c0498afd8b09",
+      "fixed_revision": "a9439f0c503ac8e0f009a0ec39f8bff1a6271d51",
+      "selection_basis": "official metadata only; no Agent outcome used"
+    }
+  ]
+}

@@ -55,4 +55,5 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         workspace_manager=workspace_manager_module.workspace_manager,
         profile=request.profile,
         evidence_commitment=request.evidence_commitment,
+        hypothesis_quality=request.hypothesis_quality,
     )

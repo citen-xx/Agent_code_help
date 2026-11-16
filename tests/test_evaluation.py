@@ -149,6 +149,7 @@ async def test_single_task_success_and_report(tmp_path):
         "repair_planner": False,
         "repair_loop": False,
         "evidence_commitment": False,
+        "hypothesis_quality": False,
     }
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["summary"]["passed_tasks"] == 1

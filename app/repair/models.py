@@ -51,6 +51,33 @@ class RepairHypothesis(BaseModel):
     confidence: float = Field(default=0.5, ge=0, le=1)
 
 
+class DependencyType(StrEnum):
+    CALLER = "caller"
+    CALLEE = "callee"
+    INTERFACE = "interface"
+    INHERITANCE = "inheritance"
+    CROSS_FILE_CONTRACT = "cross_file_contract"
+    OTHER = "other"
+
+
+class UnresolvedDependency(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question: str = Field(min_length=8)
+    dependency_type: DependencyType
+    candidate_files: list[str] = Field(default_factory=list)
+    candidate_symbols: list[str] = Field(default_factory=list)
+
+
+class AlternativeExplanation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    explanation: str = Field(min_length=8)
+    distinguishing_evidence: str = Field(min_length=8)
+    candidate_files: list[str] = Field(default_factory=list)
+    candidate_symbols: list[str] = Field(default_factory=list)
+
+
 class PlannedChange(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,10 +119,29 @@ class CreateEvidenceRepairPlanRequest(EvidenceRepairPlan):
     revision_reason: str | None = None
 
 
+class QualityRepairHypothesis(RepairHypothesis):
+    causal_mechanism: str = Field(min_length=20)
+    testable_prediction: str = Field(min_length=10)
+    unresolved_dependencies: list[UnresolvedDependency] = Field(
+        default_factory=list
+    )
+    alternative_explanations: list[AlternativeExplanation] = Field(
+        default_factory=list
+    )
+
+
+class QualityEvidenceRepairPlan(RepairPlan):
+    hypothesis: QualityRepairHypothesis
+
+
+class CreateQualityEvidenceRepairPlanRequest(QualityEvidenceRepairPlan):
+    revision_reason: str | None = None
+
+
 class PlanRevision(BaseModel):
     revision: int = Field(ge=1)
     reason: str
-    plan: RepairPlan | EvidenceRepairPlan
+    plan: RepairPlan | EvidenceRepairPlan | QualityEvidenceRepairPlan
     modified_files: list[str] = Field(default_factory=list)
     failure_summary: str | None = None
     diff: str = ""

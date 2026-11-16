@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "benchmark": "defects4j_v2_holdout",
+  "generated_at": "2026-11-16T09:27:02.469978+00:00",
+  "defects4j_commit": "8c16da8230843cdc918eaf4ddb449637f02b83c6",
+  "source": "local pinned Defects4J metadata and project repositories",
+  "task_count": 14,
+  "tasks_sha256": "56792dc07f1e33e91c540d60335173d8aa7e9afc566e2652eb6efad5b901c84d",
+  "composition": {
+    "local": 8,
+    "cross_file": 1,
+    "structural": 5
+  },
+  "projects": [
+    "Codec",
+    "Gson"
+  ],
+  "selection_rule": "Official metadata and reproducible buggy-fail/fixed-pass only; Agent outcomes were never consulted.",
+  "limitations": "Cli, JacksonXml, and Jsoup candidates were attempted but did not satisfy full-suite reproduction under the pinned host Maven/JDK environment. The frozen holdout therefore has lower project diversity than preferred."
+}

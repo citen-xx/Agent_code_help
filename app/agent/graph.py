@@ -57,7 +57,9 @@ from app.agent.budget import (
 )
 from app.agent.context_lifecycle import compact_model_messages
 from app.agent.commitment import (
+    BROAD_EXPLORATION_TOOLS,
     CommitmentTelemetry,
+    DependencyProbeEvent,
     EXPLORATION_TOOLS,
     EvidenceCommitmentController,
     PlanStatusEvent,
@@ -69,11 +71,13 @@ from app.core.config import settings
 from app.llm.client import build_chat_model
 from app.repair.models import (
     CreateEvidenceRepairPlanRequest,
+    CreateQualityEvidenceRepairPlanRequest,
     CreateRepairPlanRequest,
     EvidenceRepairPlan,
     PlanExecutionStatus,
     PlanRevision,
     RepairPlan,
+    QualityEvidenceRepairPlan,
 )
 from app.repair.tools import create_repair_plan_tools
 from app.schemas.agent import AnalyzeResponse
@@ -783,6 +787,19 @@ def build_agent_graph(
         plan_status_events: list[PlanStatusEvent] = []
         validation_errors: list[str] = []
         evidence_sufficient_step = state.get("evidence_sufficient_step")
+        dependency_probes: list[DependencyProbeEvent] = []
+        dependency_probe_fingerprints = list(
+            state.get("dependency_probe_fingerprints", [])
+        )
+        targeted_exploration_calls = state.get(
+            "targeted_exploration_calls",
+            0,
+        )
+        broad_exploration_calls = state.get(
+            "broad_exploration_calls",
+            0,
+        )
+        last_quality_plan_step = state.get("last_quality_plan_step")
         tool_events: list[ToolEvent] = []
         calls = getattr(last, "tool_calls", None) or []
         patch_requested = any(call.get("name") == "apply_patch" for call in calls)
@@ -797,6 +814,23 @@ def build_agent_graph(
             invocation_succeeded = False
             if tool is None:
                 content = f"[tool error] 未知工具：{name}（可用工具：{', '.join(sorted(tools_by_name))}）"
+            elif (
+                capabilities.hypothesis_quality
+                and name == "apply_patch"
+                and isinstance(repair_plan, QualityEvidenceRepairPlan)
+                and not plan_stale
+                and EvidenceCommitmentController.hypothesis_readiness(
+                    repair_plan
+                ).requires_targeted_exploration
+            ):
+                validation_errors.append(
+                    "unresolved_dependency_blocks_patch"
+                )
+                content = (
+                    "[hypothesis quality] 当前 Hypothesis 仍有 unresolved "
+                    "dependency 或 alternative explanation。先完成定向证据检查并"
+                    "修订 Hypothesis，再 apply_patch。"
+                )
             elif (
                 capabilities.evidence_commitment
                 and name == "apply_patch"
@@ -814,6 +848,7 @@ def build_agent_graph(
                 )
             elif (
                 capabilities.evidence_commitment
+                and not capabilities.hypothesis_quality
                 and name in EXPLORATION_TOOLS
                 and isinstance(repair_plan, EvidenceRepairPlan)
                 and not plan_stale
@@ -829,6 +864,53 @@ def build_agent_graph(
                     "[commitment required] 当前 Plan 没有 unresolved question。"
                     "禁止继续大范围探索；请执行计划中的 Patch，"
                     "或提供具体 unresolved_question 后修订 Plan。"
+                )
+            elif (
+                capabilities.hypothesis_quality
+                and name in EXPLORATION_TOOLS
+                and isinstance(repair_plan, QualityEvidenceRepairPlan)
+                and not plan_stale
+                and EvidenceCommitmentController.hypothesis_readiness(
+                    repair_plan
+                ).requires_targeted_exploration
+                and (
+                    _argument_fingerprint(args)
+                    in dependency_probe_fingerprints
+                    or not EvidenceCommitmentController.dependency_probe_allowed(
+                        str(name),
+                        args,
+                        repair_plan,
+                        existing_fingerprints=set(
+                            dependency_probe_fingerprints
+                        ),
+                        max_probes=4,
+                    )
+                )
+            ):
+                validation_errors.append("dependency_probe_blocked")
+                content = (
+                    "[hypothesis quality] 本次探索未对应新的 unresolved "
+                    "dependency candidate，或已超过 4 次定向检查。"
+                    "请修订 Hypothesis/Plan，不得重复同一个检查。"
+                )
+            elif (
+                capabilities.hypothesis_quality
+                and name in EXPLORATION_TOOLS
+                and isinstance(repair_plan, QualityEvidenceRepairPlan)
+                and not plan_stale
+                and not EvidenceCommitmentController.hypothesis_readiness(
+                    repair_plan
+                ).requires_targeted_exploration
+                and not EvidenceCommitmentController.exploration_is_directed(
+                    str(name),
+                    args,
+                    repair_plan,
+                )
+            ):
+                validation_errors.append("broad_exploration_blocked")
+                content = (
+                    "[hypothesis quality] Hypothesis 已 ready；"
+                    "禁止继续大范围探索，请执行 Plan 中的 Patch。"
                 )
             elif (
                 capabilities.repair_loop
@@ -904,27 +986,87 @@ def build_agent_graph(
             elif invocation_succeeded and name == "create_repair_plan":
                 try:
                     request_class = (
-                        CreateEvidenceRepairPlanRequest
+                        CreateQualityEvidenceRepairPlanRequest
+                        if capabilities.hypothesis_quality
+                        else CreateEvidenceRepairPlanRequest
                         if capabilities.evidence_commitment
                         else CreateRepairPlanRequest
                     )
                     request = request_class.model_validate_json(content)
-                    if isinstance(request, CreateEvidenceRepairPlanRequest):
-                        plan = EvidenceRepairPlan.model_validate(
-                            request.model_dump(
-                                exclude={"revision_reason"}
+                    if isinstance(
+                        request,
+                        (
+                            CreateEvidenceRepairPlanRequest,
+                            CreateQualityEvidenceRepairPlanRequest,
+                        ),
+                    ):
+                        plan_class = (
+                            QualityEvidenceRepairPlan
+                            if isinstance(
+                                request,
+                                CreateQualityEvidenceRepairPlanRequest,
+                            )
+                            else EvidenceRepairPlan
+                        )
+                        plan = plan_class.model_validate(
+                            request.model_dump(exclude={"revision_reason"})
+                        )
+                        all_evidence_events = [
+                            *state.get("tool_events", []),
+                            *tool_events,
+                        ]
+                        needs_fresh_evidence = (
+                            isinstance(repair_plan, QualityEvidenceRepairPlan)
+                            and EvidenceCommitmentController.hypothesis_readiness(
+                                repair_plan
+                            ).requires_targeted_exploration
+                            and last_quality_plan_step is not None
+                        )
+                        has_fresh_evidence = bool(
+                            last_quality_plan_step is not None
+                            and any(
+                                event.step > last_quality_plan_step
+                                and (
+                                    event.tool_name == "read_file"
+                                    or event.tool_name == "run_tests"
+                                    or event.tool_name in {
+                                        "find_symbol",
+                                        "find_references",
+                                        "find_callers",
+                                        "find_callees",
+                                        "analyze_impact",
+                                    }
+                                )
+                                for event in all_evidence_events
                             )
                         )
+                        if needs_fresh_evidence and not has_fresh_evidence:
+                            validation_errors.append(
+                                "quality revision lacks new observation"
+                            )
+                            invocation_succeeded = False
+                            content = (
+                                "[hypothesis quality] 修订 unresolved "
+                                "Hypothesis 前必须获得新的源码、引用或测试观察。"
+                            )
+                            raise ValueError("missing fresh evidence")
                         evidence_errors = (
-                            EvidenceCommitmentController.validate_evidence_plan(
+                            EvidenceCommitmentController.validate_quality_plan(
+                                request,
+                                all_evidence_events,
+                                has_seen_test_failure=has_seen_test_failure,
+                            )
+                            if isinstance(
+                                request,
+                                CreateQualityEvidenceRepairPlanRequest,
+                            )
+                            else EvidenceCommitmentController.validate_evidence_plan(
                                 request,
                                 [
                                     *state.get("tool_events", []),
                                     *tool_events,
                                 ],
-                                has_seen_test_failure=(
-                                    has_seen_test_failure
-                                ),
+                                has_seen_test_failure=has_seen_test_failure,
                             )
                         )
                         if evidence_errors:
@@ -936,11 +1078,6 @@ def build_agent_graph(
                                 + "; ".join(evidence_errors[:5])
                             )
                             raise ValueError("evidence validation failed")
-                        plan = EvidenceRepairPlan.model_validate(
-                            request.model_dump(
-                                exclude={"revision_reason"}
-                            )
-                        )
                     else:
                         plan = RepairPlan.model_validate(
                             request.model_dump(
@@ -993,6 +1130,12 @@ def build_agent_graph(
                     )
                     repair_plan = plan
                     plan_stale = False
+                    if isinstance(plan, QualityEvidenceRepairPlan):
+                        dependency_probe_fingerprints.clear()
+                        last_quality_plan_step = max(
+                            state["step_count"],
+                            1,
+                        )
                     plan_status_events.append(
                         PlanStatusEvent(
                             step=max(state["step_count"], 1),
@@ -1046,6 +1189,34 @@ def build_agent_graph(
                             )
                 except ValueError:
                     logger.warning("Could not parse run_tests result: %s", content[:500])
+            if invocation_succeeded and name in EXPLORATION_TOOLS:
+                readiness = (
+                    EvidenceCommitmentController.hypothesis_readiness(
+                        repair_plan
+                    )
+                    if isinstance(repair_plan, QualityEvidenceRepairPlan)
+                    else None
+                )
+                if readiness and readiness.requires_targeted_exploration:
+                    targeted_exploration_calls += 1
+                    dependency_probe_fingerprints.append(
+                        _argument_fingerprint(args)
+                    )
+                    dependency_probes.append(
+                        DependencyProbeEvent(
+                            step=max(state["step_count"], 1),
+                            question=(
+                                readiness.unresolved_dependencies[0]
+                                if readiness.unresolved_dependencies
+                                else readiness.alternatives[0]
+                            ),
+                            tool_name=str(name),
+                            target=_target_file(str(name), args),
+                            query=_tool_query(str(name), args),
+                        )
+                    )
+                elif name in BROAD_EXPLORATION_TOOLS:
+                    broad_exploration_calls += 1
             tool_invoked = (
                 name == "apply_patch"
                 and bool(content)
@@ -1201,11 +1372,20 @@ def build_agent_graph(
                 current_step=state["step_count"],
             )
             if readiness.sufficient:
+                prompt_content = (
+                    EvidenceCommitmentController.evidence_prompt(readiness)
+                )
+                if capabilities.hypothesis_quality:
+                    prompt_content += (
+                        " Explain the causal mechanism and a testable prediction. "
+                        "If callers, implementations, inheritance, cross-file "
+                        "contracts, or competing explanations remain uncertain, "
+                        "record structured unresolved dependencies instead of "
+                        "pretending the hypothesis is complete."
+                    )
                 tool_messages.append(
                     HumanMessage(
-                        content=EvidenceCommitmentController.evidence_prompt(
-                            readiness
-                        )
+                        content=prompt_content
                     )
                 )
                 evidence_prompt_sent = True
@@ -1237,6 +1417,11 @@ def build_agent_graph(
             "evidence_prompt_sent": evidence_prompt_sent,
             "evidence_sufficient_step": evidence_sufficient_step,
             "commitment_validation_errors": validation_errors,
+            "dependency_probes": dependency_probes,
+            "dependency_probe_fingerprints": dependency_probe_fingerprints,
+            "last_quality_plan_step": last_quality_plan_step,
+            "targeted_exploration_calls": targeted_exploration_calls,
+            "broad_exploration_calls": broad_exploration_calls,
         }
 
     def route_after_agent(state: AgentState) -> Literal["tools", "end"]:
@@ -1276,6 +1461,7 @@ async def run_agent(
     test_runner: Callable | None = None,
     step_budget_policy: str | StepBudgetPolicy | None = None,
     evidence_commitment: bool = False,
+    hypothesis_quality: bool = False,
 ) -> AnalyzeResponse:
     """Run the agent loop for a task against a local repository.
 
@@ -1286,7 +1472,8 @@ async def run_agent(
     resolved_profile = resolve_profile(profile)
     capabilities = replace(
         capabilities_for(resolved_profile),
-        evidence_commitment=evidence_commitment,
+        evidence_commitment=evidence_commitment or hypothesis_quality,
+        hypothesis_quality=hypothesis_quality,
     )
     budget_policy = (
         step_budget_policy
@@ -1313,6 +1500,7 @@ async def run_agent(
                 repository_path,
                 manager=workspace_manager,
                 require_evidence=capabilities.evidence_commitment,
+                hypothesis_quality=capabilities.hypothesis_quality,
             )
         tools += create_patch_tools(
             workspace_id,
@@ -1362,6 +1550,11 @@ async def run_agent(
         "evidence_prompt_sent": False,
         "evidence_sufficient_step": None,
         "commitment_validation_errors": [],
+        "dependency_probes": [],
+        "dependency_probe_fingerprints": [],
+        "last_quality_plan_step": None,
+        "targeted_exploration_calls": 0,
+        "broad_exploration_calls": 0,
     }
 
     logger.info(
@@ -1400,6 +1593,7 @@ async def run_agent(
     budget_telemetry = _step_budget_telemetry(budget_policy, result)
     commitment_telemetry = EvidenceCommitmentController.build_telemetry(
         evidence_commitment=capabilities.evidence_commitment,
+        hypothesis_quality=capabilities.hypothesis_quality,
         tool_events=tool_events,
         plan_revisions=plan_revisions,
         plan_status_history=list(result.get("plan_status_events", [])),
@@ -1410,6 +1604,21 @@ async def run_agent(
         ),
         validation_errors=list(
             result.get("commitment_validation_errors", [])
+        ),
+        targeted_exploration_calls=result.get(
+            "targeted_exploration_calls",
+            0,
+        ),
+        broad_exploration_calls=result.get(
+            "broad_exploration_calls",
+            0,
+        ),
+        dependency_probes=list(result.get("dependency_probes", [])),
+        evidence_provenance_valid=not any(
+            "not been observed" in error
+            or "source changed after observation" in error
+            or "validation failed" in error
+            for error in result.get("commitment_validation_errors", [])
         ),
     )
     final_diff = ""

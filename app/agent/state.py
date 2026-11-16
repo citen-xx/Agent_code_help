@@ -6,7 +6,7 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import BaseMessage
 
 from app.agent.budget import BudgetExtension
-from app.agent.commitment import PlanStatusEvent
+from app.agent.commitment import DependencyProbeEvent, PlanStatusEvent
 from app.repair.models import PlanRevision, RepairPlan
 from app.agent.telemetry import ToolEvent
 from app.workspace.models import TestRunResult
@@ -41,6 +41,8 @@ class AgentState(TypedDict):
         evidence_prompt_sent: Whether sufficient-evidence guidance was emitted.
         evidence_sufficient_step: First step that met runtime evidence readiness.
         commitment_validation_errors: Rejected evidence/plan violations.
+        dependency_probes: Targeted exploration tied to unresolved questions.
+        dependency_probe_fingerprints: Deterministic probe deduplication keys.
     """
 
     task: str
@@ -67,3 +69,8 @@ class AgentState(TypedDict):
     evidence_prompt_sent: bool
     evidence_sufficient_step: int | None
     commitment_validation_errors: Annotated[list[str], operator.add]
+    dependency_probes: Annotated[list[DependencyProbeEvent], operator.add]
+    dependency_probe_fingerprints: list[str]
+    last_quality_plan_step: int | None
+    targeted_exploration_calls: int
+    broad_exploration_calls: int

@@ -438,6 +438,41 @@ def _task_records(
                         if commitment
                         else []
                     ),
+                    "targeted_exploration_calls": (
+                        commitment.targeted_exploration_calls
+                        if commitment
+                        else 0
+                    ),
+                    "broad_exploration_calls": (
+                        commitment.broad_exploration_calls
+                        if commitment
+                        else 0
+                    ),
+                    "dependency_probe_count": (
+                        commitment.dependency_probe_count
+                        if commitment
+                        else 0
+                    ),
+                    "evidence_provenance_valid": (
+                        commitment.evidence_provenance_valid
+                        if commitment
+                        else None
+                    ),
+                    "hypothesis_readiness": (
+                        commitment.hypothesis_readiness
+                        if commitment
+                        else "not_available"
+                    ),
+                    "unresolved_dependency_count": (
+                        commitment.unresolved_dependency_count
+                        if commitment
+                        else 0
+                    ),
+                    "alternative_explanation_count": (
+                        commitment.alternative_explanation_count
+                        if commitment
+                        else 0
+                    ),
                 }
             )
     return records
@@ -606,6 +641,18 @@ def _policy_metrics(
                 for error in item["commitment_validation_errors"]
             )
             for item in records
+        ),
+        "targeted_exploration_calls": sum(
+            item["targeted_exploration_calls"] for item in records
+        ),
+        "broad_exploration_calls": sum(
+            item["broad_exploration_calls"] for item in records
+        ),
+        "dependency_probes": sum(
+            item["dependency_probe_count"] for item in records
+        ),
+        "evidence_provenance_valid_runs": sum(
+            item["evidence_provenance_valid"] is True for item in records
         ),
         "patch_plan_mismatch_runs": sum(
             "patch_target_mismatch"

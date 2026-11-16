@@ -6,7 +6,12 @@ from app.agent.budget import StepBudgetTelemetry
 from app.agent.capabilities import DEFAULT_AGENT_PROFILE, AgentProfile
 from app.agent.commitment import CommitmentTelemetry
 from app.agent.telemetry import ToolEvent
-from app.repair.models import EvidenceRepairPlan, PlanRevision, RepairPlan
+from app.repair.models import (
+    EvidenceRepairPlan,
+    PlanRevision,
+    QualityEvidenceRepairPlan,
+    RepairPlan,
+)
 from app.workspace.models import TestRunResult
 
 
@@ -29,6 +34,10 @@ class AnalyzeRequest(BaseModel):
     evidence_commitment: bool = Field(
         default=False,
         description="Enable runtime evidence validation and repair commitment.",
+    )
+    hypothesis_quality: bool = Field(
+        default=False,
+        description="Enable causal-quality and dependency-readiness gating.",
     )
 
     @model_validator(mode="after")
@@ -108,7 +117,9 @@ class AnalyzeResponse(BaseModel):
         default="",
         description="Current uncommitted diff after the Agent run.",
     )
-    repair_plan: RepairPlan | EvidenceRepairPlan | None = Field(
+    repair_plan: (
+        RepairPlan | EvidenceRepairPlan | QualityEvidenceRepairPlan | None
+    ) = Field(
         default=None,
         description="Latest structured repair plan.",
     )

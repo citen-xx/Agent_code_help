@@ -187,6 +187,7 @@ def test_experiment_artifacts_include_profile_metadata(tmp_path):
         "repair_planner": False,
         "repair_loop": False,
         "evidence_commitment": False,
+        "hypothesis_quality": False,
     }
     assert variant["runs"][0]["path"] == (
         "variant_code_intelligence/run-1/report.json"

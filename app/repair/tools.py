@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from langchain_core.tools import BaseTool, StructuredTool
 
 from app.repair.models import (
+    CreateQualityEvidenceRepairPlanRequest,
     CreateEvidenceRepairPlanRequest,
     CreateRepairPlanRequest,
 )
@@ -21,6 +22,7 @@ def create_repair_plan_tools(
     manager: "WorkspaceManager | None" = None,
     *,
     require_evidence: bool = False,
+    hypothesis_quality: bool = False,
 ) -> list[BaseTool]:
     if manager is not None:
         repo = manager.assert_repository_binding(workspace_id, repository_path)
@@ -49,7 +51,9 @@ def create_repair_plan_tools(
 
     def _create_plan(**kwargs) -> str:
         request_class = (
-            CreateEvidenceRepairPlanRequest
+            CreateQualityEvidenceRepairPlanRequest
+            if hypothesis_quality
+            else CreateEvidenceRepairPlanRequest
             if require_evidence
             else CreateRepairPlanRequest
         )
@@ -62,7 +66,13 @@ def create_repair_plan_tools(
             _validate_relative_file(path)
         for change in request.planned_changes:
             _validate_relative_file(change.file_path)
-        if isinstance(request, CreateEvidenceRepairPlanRequest):
+        if isinstance(
+            request,
+            (
+                CreateEvidenceRepairPlanRequest,
+                CreateQualityEvidenceRepairPlanRequest,
+            ),
+        ):
             for evidence in request.hypothesis.evidence:
                 if evidence.path:
                     _validate_relative_file(evidence.path)
@@ -74,6 +84,13 @@ def create_repair_plan_tools(
                     raise ToolError("Evidence line range 非法")
             for path in request.hypothesis.suspected_files:
                 _validate_relative_file(path)
+            if isinstance(request, CreateQualityEvidenceRepairPlanRequest):
+                for dependency in request.hypothesis.unresolved_dependencies:
+                    for path in dependency.candidate_files:
+                        _validate_relative_file(path)
+                for alternative in request.hypothesis.alternative_explanations:
+                    for path in alternative.candidate_files:
+                        _validate_relative_file(path)
         return request.model_dump_json(indent=2)
 
     description = (
@@ -83,7 +100,13 @@ def create_repair_plan_tools(
         "a validation plan that requires Maven test. When revising after a "
         "failed test, provide revision_reason."
     )
-    if require_evidence:
+    if hypothesis_quality:
+        description += (
+            " Phase 8 quality mode requires causal mechanism and testable "
+            "prediction fields, plus explicit unresolved dependencies and "
+            "alternative explanations when runtime evidence is ambiguous."
+        )
+    elif require_evidence:
         description += (
             " Evidence-driven mode requires a RepairHypothesis whose evidence "
             "references only already-observed runtime information."
@@ -94,7 +117,9 @@ def create_repair_plan_tools(
             description=description,
             func=_create_plan,
             args_schema=(
-                CreateEvidenceRepairPlanRequest
+                CreateQualityEvidenceRepairPlanRequest
+                if hypothesis_quality
+                else CreateEvidenceRepairPlanRequest
                 if require_evidence
                 else CreateRepairPlanRequest
             ),

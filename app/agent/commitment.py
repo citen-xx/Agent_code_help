@@ -9,6 +9,7 @@ from app.repair.models import (
     EvidenceRepairPlan,
     EvidenceType,
     PlanExecutionStatus,
+    QualityEvidenceRepairPlan,
 )
 
 
@@ -21,10 +22,25 @@ class EvidenceReadiness(BaseModel):
     reason: str
 
 
+class HypothesisReadiness(BaseModel):
+    status: str
+    requires_targeted_exploration: bool
+    unresolved_dependencies: list[str] = Field(default_factory=list)
+    alternatives: list[str] = Field(default_factory=list)
+
+
 class PlanStatusEvent(BaseModel):
     step: int = Field(ge=1)
     status: PlanExecutionStatus
     reason: str
+
+
+class DependencyProbeEvent(BaseModel):
+    step: int = Field(ge=1)
+    question: str
+    tool_name: str
+    target: str | None = None
+    query: str | None = None
 
 
 class CommitmentTelemetry(BaseModel):
@@ -44,10 +60,18 @@ class CommitmentTelemetry(BaseModel):
     patch_attempts: int = Field(default=0, ge=0)
     patch_successes: int = Field(default=0, ge=0)
     post_plan_exploration_calls: int = Field(default=0, ge=0)
+    targeted_exploration_calls: int = Field(default=0, ge=0)
+    broad_exploration_calls: int = Field(default=0, ge=0)
+    dependency_probe_count: int = Field(default=0, ge=0)
+    evidence_provenance_valid: bool = True
+    hypothesis_readiness: str = "not_evaluated"
     no_patch_failure: bool = False
     plan_status_history: list[PlanStatusEvent] = Field(default_factory=list)
     validation_errors: list[str] = Field(default_factory=list)
     evidence_references: list[dict] = Field(default_factory=list)
+    unresolved_dependency_count: int = Field(default=0, ge=0)
+    alternative_explanation_count: int = Field(default=0, ge=0)
+    dependency_probes: list[DependencyProbeEvent] = Field(default_factory=list)
 
 
 EXPLORATION_TOOLS = {
@@ -151,7 +175,7 @@ class EvidenceCommitmentController:
 
     @staticmethod
     def validate_evidence_plan(
-        plan: EvidenceRepairPlan,
+        plan: EvidenceRepairPlan | QualityEvidenceRepairPlan,
         tool_events: list[ToolEvent],
         *,
         has_seen_test_failure: bool,
@@ -201,22 +225,40 @@ class EvidenceCommitmentController:
                     errors.append(
                         f"{prefix}: source file was not read: {evidence.path}"
                     )
-                elif (
-                    evidence.start_line is not None
-                    and evidence.end_line is not None
-                    and not any(
-                        event.read_start_line is None
-                        or event.read_end_line is None
-                        or (
-                            evidence.start_line <= event.read_end_line
-                            and evidence.end_line >= event.read_start_line
+                else:
+                    latest_read = max(matches, key=lambda item: item.step)
+                    later_patch = any(
+                        event.tool_name == "apply_patch"
+                        and event.success
+                        and evidence.path
+                        and _normalize_path(event.target_file or "")
+                        == _normalize_path(evidence.path)
+                        and event.step > latest_read.step
+                        for event in tool_events
+                    )
+                    if later_patch and isinstance(
+                        plan,
+                        QualityEvidenceRepairPlan,
+                    ):
+                        errors.append(
+                            f"{prefix}: source changed after observation"
                         )
-                        for event in matches
-                    )
-                ):
-                    errors.append(
-                        f"{prefix}: line range was not observed"
-                    )
+                    if (
+                        evidence.start_line is not None
+                        and evidence.end_line is not None
+                        and not any(
+                            event.read_start_line is None
+                            or event.read_end_line is None
+                            or (
+                                evidence.start_line <= event.read_end_line
+                                and evidence.end_line >= event.read_start_line
+                            )
+                            for event in matches
+                        )
+                    ):
+                        errors.append(
+                            f"{prefix}: line range was not observed"
+                        )
             elif evidence.evidence_type is EvidenceType.SYMBOL_QUERY:
                 if not any(
                     event.query
@@ -260,6 +302,129 @@ class EvidenceCommitmentController:
         return errors
 
     @staticmethod
+    def hypothesis_readiness(plan) -> HypothesisReadiness:
+        if not isinstance(plan, QualityEvidenceRepairPlan):
+            return HypothesisReadiness(
+                status="legacy_evidence",
+                requires_targeted_exploration=False,
+            )
+        dependencies = [
+            item.question
+            for item in plan.hypothesis.unresolved_dependencies
+        ]
+        alternatives = [
+            item.explanation
+            for item in plan.hypothesis.alternative_explanations
+        ]
+        return HypothesisReadiness(
+            status=(
+                "targeted_exploration_required"
+                if dependencies or alternatives
+                else "ready_for_patch"
+            ),
+            requires_targeted_exploration=bool(
+                dependencies or alternatives
+            ),
+            unresolved_dependencies=dependencies,
+            alternatives=alternatives,
+        )
+
+    @staticmethod
+    def validate_quality_plan(
+        plan: QualityEvidenceRepairPlan,
+        tool_events: list[ToolEvent],
+        *,
+        has_seen_test_failure: bool,
+    ) -> list[str]:
+        errors = EvidenceCommitmentController.validate_evidence_plan(
+            plan,
+            tool_events,
+            has_seen_test_failure=has_seen_test_failure,
+        )
+        if not plan.hypothesis.causal_mechanism.strip():
+            errors.append("missing causal mechanism")
+        elif plan.hypothesis.suspected_symbols and not any(
+            symbol.lower() in plan.hypothesis.causal_mechanism.lower()
+            for symbol in plan.hypothesis.suspected_symbols
+        ):
+            errors.append(
+                "causal mechanism does not reference a suspected symbol"
+            )
+        if not plan.hypothesis.testable_prediction.strip():
+            errors.append("missing testable prediction")
+        elif plan.impacted_tests and not any(
+            test.split("#", 1)[0].rsplit(".", 1)[-1].lower()
+            in plan.hypothesis.testable_prediction.lower()
+            or "test" in plan.hypothesis.testable_prediction.lower()
+            for test in plan.impacted_tests
+        ):
+            errors.append(
+                "testable prediction does not reference the validation target"
+            )
+        for dependency in plan.hypothesis.unresolved_dependencies:
+            if not dependency.candidate_files and not dependency.candidate_symbols:
+                errors.append(
+                    "unresolved dependency requires candidate files or symbols"
+                )
+        for alternative in plan.hypothesis.alternative_explanations:
+            if (
+                not alternative.candidate_files
+                and not alternative.candidate_symbols
+            ):
+                errors.append(
+                    "alternative explanation requires distinguishing targets"
+                )
+        return errors
+
+    @staticmethod
+    def dependency_targets(plan: QualityEvidenceRepairPlan) -> tuple[set[str], set[str]]:
+        files = set()
+        symbols = set()
+        for dependency in plan.hypothesis.unresolved_dependencies:
+            files.update(
+                _normalize_path(value) for value in dependency.candidate_files
+            )
+            symbols.update(dependency.candidate_symbols)
+        for alternative in plan.hypothesis.alternative_explanations:
+            files.update(
+                _normalize_path(value) for value in alternative.candidate_files
+            )
+            symbols.update(alternative.candidate_symbols)
+        return files, symbols
+
+    @staticmethod
+    def dependency_probe_allowed(
+        tool_name: str,
+        args: dict,
+        plan: QualityEvidenceRepairPlan,
+        *,
+        existing_fingerprints: set[str],
+        max_probes: int,
+    ) -> bool:
+        if len(existing_fingerprints) >= max_probes:
+            return False
+        if tool_name == "read_file":
+            path = str(args.get("path") or "")
+            files, _ = EvidenceCommitmentController.dependency_targets(plan)
+            return _normalize_path(path) in files
+        if tool_name not in {
+            "find_symbol",
+            "find_references",
+            "find_callers",
+            "find_callees",
+            "analyze_impact",
+        }:
+            return False
+        _, symbols = EvidenceCommitmentController.dependency_targets(plan)
+        value = str(
+            args.get("symbol")
+            or args.get("name")
+            or args.get("query")
+            or ""
+        )
+        return bool(value and value in symbols)
+
+    @staticmethod
     def patch_matches_plan(args: dict, plan) -> bool:
         planned = {
             _normalize_path(change.file_path)
@@ -299,6 +464,7 @@ class EvidenceCommitmentController:
     def build_telemetry(
         *,
         evidence_commitment: bool,
+        hypothesis_quality: bool = False,
         tool_events: list[ToolEvent],
         plan_revisions: list,
         plan_status_history: list[PlanStatusEvent],
@@ -306,6 +472,10 @@ class EvidenceCommitmentController:
         final_test_passed: bool,
         has_seen_test_failure: bool,
         validation_errors: list[str],
+        targeted_exploration_calls: int = 0,
+        broad_exploration_calls: int = 0,
+        dependency_probes: list[DependencyProbeEvent] | None = None,
+        evidence_provenance_valid: bool = True,
     ) -> CommitmentTelemetry:
         tests = [
             event
@@ -333,7 +503,10 @@ class EvidenceCommitmentController:
         evidence_plans = [
             revision.plan
             for revision in plan_revisions
-            if isinstance(revision.plan, EvidenceRepairPlan)
+            if isinstance(
+                revision.plan,
+                (EvidenceRepairPlan, QualityEvidenceRepairPlan),
+            )
         ]
         first_failure = (
             tests[0].step
@@ -356,14 +529,55 @@ class EvidenceCommitmentController:
                 for event in tool_events
             )
         references = []
+        unresolved_count = 0
+        alternative_count = 0
+        readiness = "not_evaluated"
         if evidence_plans:
             references = [
                 evidence.model_dump(mode="json")
                 for evidence in evidence_plans[-1].hypothesis.evidence
             ]
+            readiness_value = (
+                EvidenceCommitmentController.hypothesis_readiness(
+                    evidence_plans[-1]
+                )
+            )
+            readiness = readiness_value.status
+            if isinstance(
+                evidence_plans[-1],
+                QualityEvidenceRepairPlan,
+            ):
+                unresolved_count = len(
+                    evidence_plans[-1]
+                    .hypothesis.unresolved_dependencies
+                )
+                alternative_count = len(
+                    evidence_plans[-1]
+                    .hypothesis.alternative_explanations
+                )
+        provenance_failure = any(
+            event.tool_name == "create_repair_plan"
+            and not event.success
+            and event.error_summary
+            and any(
+                marker in event.error_summary
+                for marker in (
+                    "was not read",
+                    "source changed after observation",
+                    "line range was not observed",
+                    "test failure has not been observed",
+                )
+            )
+            for event in tool_events
+        )
+        telemetry_errors = list(validation_errors)
+        if provenance_failure and not telemetry_errors:
+            telemetry_errors.append("evidence provenance rejected")
         return CommitmentTelemetry(
             mode=(
-                "evidence_commitment"
+                "evidence_aware_commitment"
+                if hypothesis_quality
+                else "evidence_commitment"
                 if evidence_commitment
                 else "planner_control"
             ),
@@ -393,8 +607,18 @@ class EvidenceCommitmentController:
             patch_attempts=len(patches),
             patch_successes=len(successful_patches),
             post_plan_exploration_calls=post_plan_exploration,
+            targeted_exploration_calls=targeted_exploration_calls,
+            broad_exploration_calls=broad_exploration_calls,
+            dependency_probe_count=len(dependency_probes or []),
+            evidence_provenance_valid=(
+                evidence_provenance_valid and not provenance_failure
+            ),
+            hypothesis_readiness=readiness,
             no_patch_failure=not successful_patches,
             plan_status_history=plan_status_history,
-            validation_errors=validation_errors,
+            validation_errors=telemetry_errors,
             evidence_references=references,
+            unresolved_dependency_count=unresolved_count,
+            alternative_explanation_count=alternative_count,
+            dependency_probes=list(dependency_probes or []),
         )

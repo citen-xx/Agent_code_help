@@ -172,8 +172,17 @@ def _source_manifest(tasks_file: Path, tasks) -> dict:
     }
     if control_tools != phase7_manifest["agent"]["treatment_tool_schema_hashes"]:
         raise RuntimeError("Phase 7 Control tool schema 不一致")
+    phase65_manifest = json.loads(
+        (
+            PROJECT_ROOT
+            / "evaluation"
+            / "results"
+            / "phase6_5_budget_refinement"
+            / "source_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
     if _sha(PROJECT_ROOT / "app/agent/budget.py") != (
-        phase7_manifest["budget_policy_source"]["sha256"]
+        phase65_manifest["budget_policy_source"]["sha256"]
     ):
         raise RuntimeError("Budget source changed")
     holdout_manifest = HOLDOUT_TASKS_FILE.parent / "benchmark_manifest.json"

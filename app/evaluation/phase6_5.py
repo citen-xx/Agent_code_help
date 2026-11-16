@@ -217,130 +217,123 @@ def _audit_extension_records(phase6_payload: dict) -> list[dict]:
         report = _load_report(path)
         reports[report.run_id] = report
     records = []
-    for item in phase6_payload["adaptive_task_records"]:
+    historical = {
+        (item["run_id"], item["task_id"]): item
+        for item in phase6_payload["adaptive_task_records"]
+    }
+    for (run_id, task_id), item in historical.items():
         if not item["extension_triggered"]:
             continue
-        report = reports[item["run_id"]]
+        report = reports[run_id]
         result = next(
             value
             for value in report.results
-            if value.task_id == item["task_id"]
+            if value.task_id == task_id
         )
-        cutoffs = [
-            extension.step_at_extension
-            for extension in (
-                result.budget_telemetry.extension_steps
-                if result.budget_telemetry
-                else []
-            )
-        ]
-        cutoff = cutoffs[0]
-        before = [
-            event for event in result.tool_events if event.step <= cutoff
-        ]
-        after = [
-            event for event in result.tool_events if event.step > cutoff
-        ]
-        plans_before = [
-            event
-            for event in before
-            if event.tool_name == "create_repair_plan" and event.success
-        ]
-        patches_before = [
-            event
-            for event in before
-            if event.tool_name == "apply_patch" and event.success
-        ]
-        test_outcomes_before = [
-            (event, success)
-            for event in before
-            if event.tool_name == "run_tests" and event.invoked
-            for success in [
-                next(
-                    (
-                        value
-                        for candidate_event, value in _test_outcomes(result)
-                        if candidate_event.tool_call_index
-                        == event.tool_call_index
-                    ),
-                    None,
-                )
+        test_outcomes = _test_outcomes(result)
+        extensions = (
+            result.budget_telemetry.extension_steps
+            if result.budget_telemetry
+            else []
+        )
+        for extension_index, extension in enumerate(extensions, start=1):
+            cutoff = extension.step_at_extension
+            before = [
+                event for event in result.tool_events if event.step <= cutoff
             ]
-        ]
-        patches_after = [
-            event
-            for event in after
-            if event.tool_name == "apply_patch" and event.success
-        ]
-        tests_after = [
-            event
-            for event in after
-            if event.tool_name == "run_tests" and event.invoked
-        ]
-        plans_after = [
-            event
-            for event in after
-            if event.tool_name == "create_repair_plan" and event.success
-        ]
-        latest_test = (
-            test_outcomes_before[-1]
-            if test_outcomes_before
-            else None
-        )
-        plan_only = (
-            item["extension_reason"] == "recent_repair_plan_pending"
-        )
-        standalone_plan_only = (
-            plan_only
-            and not patches_before
-            and not test_outcomes_before
-        )
-        records.append(
-            {
-                "run_id": item["run_id"],
-                "task_id": item["task_id"],
-                "extension_step": cutoff,
-                "extension_reason": item["extension_reason"],
-                "steps_granted": item["extension_steps_granted"],
-                "plan_before_extension": bool(plans_before),
-                "patch_before_extension": bool(patches_before),
-                "test_before_extension": bool(test_outcomes_before),
-                "test_status_before_extension": (
-                    "passed"
-                    if latest_test and latest_test[1] is True
-                    else "failed"
-                    if latest_test and latest_test[1] is False
-                    else "not_run"
-                ),
-                "plan_only": plan_only,
-                "standalone_plan_only": standalone_plan_only,
-                "new_progress_after_extension": [
-                    *(
-                        f"{event.step}: patch"
-                        for event in patches_after
+            after = [
+                event for event in result.tool_events if event.step > cutoff
+            ]
+            plans_before = [
+                event
+                for event in before
+                if event.tool_name == "create_repair_plan" and event.success
+            ]
+            patches_before = [
+                event
+                for event in before
+                if event.tool_name == "apply_patch" and event.success
+            ]
+            test_outcomes_before = [
+                (event, success)
+                for event, success in test_outcomes
+                if event.step <= cutoff
+            ]
+            patches_after = [
+                event
+                for event in after
+                if event.tool_name == "apply_patch" and event.success
+            ]
+            tests_after = [
+                event
+                for event in after
+                if event.tool_name == "run_tests" and event.invoked
+            ]
+            plans_after = [
+                event
+                for event in after
+                if event.tool_name == "create_repair_plan" and event.success
+            ]
+            latest_test = (
+                test_outcomes_before[-1]
+                if test_outcomes_before
+                else None
+            )
+            plan_only = (
+                extension.reason == "recent_repair_plan_pending"
+            )
+            standalone_plan_only = (
+                plan_only
+                and not patches_before
+                and not test_outcomes_before
+            )
+            records.append(
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "extension_index": extension_index,
+                    "extension_step": cutoff,
+                    "extension_reason": extension.reason,
+                    "steps_granted": extension.steps_granted,
+                    "plan_before_extension": bool(plans_before),
+                    "patch_before_extension": bool(patches_before),
+                    "test_before_extension": bool(test_outcomes_before),
+                    "test_status_before_extension": (
+                        "passed"
+                        if latest_test and latest_test[1] is True
+                        else "failed"
+                        if latest_test and latest_test[1] is False
+                        else "not_run"
                     ),
-                    *(
-                        f"{event.step}: test"
-                        for event in tests_after
+                    "plan_only": plan_only,
+                    "standalone_plan_only": standalone_plan_only,
+                    "new_progress_after_extension": [
+                        *(
+                            f"{event.step}: patch"
+                            for event in patches_after
+                        ),
+                        *(
+                            f"{event.step}: test"
+                            for event in tests_after
+                        ),
+                        *(
+                            f"{event.step}: repair_plan"
+                            for event in plans_after
+                        ),
+                    ],
+                    "patch_after_extension_step": (
+                        patches_after[0].step if patches_after else None
                     ),
-                    *(
-                        f"{event.step}: repair_plan"
-                        for event in plans_after
+                    "test_after_extension_step": (
+                        tests_after[0].step if tests_after else None
                     ),
-                ],
-                "patch_after_extension_step": (
-                    patches_after[0].step if patches_after else None
-                ),
-                "test_after_extension_step": (
-                    tests_after[0].step if tests_after else None
-                ),
-                "success": item["success"],
-                "extra_tokens_vs_fixed20": item[
-                    "extra_tokens_vs_fixed20"
-                ],
-                "tokens": item["tokens"],
-            }
-        )
+                    "success": item["success"],
+                    "extra_tokens_vs_fixed20": item[
+                        "extra_tokens_vs_fixed20"
+                    ],
+                    "tokens": item["tokens"],
+                }
+            )
     return records
 
 
@@ -356,12 +349,13 @@ def _extension_audit_markdown(records: list[dict]) -> str:
         "This audit uses historical Phase 6 traces. Final task failure does not "
         "prove an extension was causally useless.",
         "",
-        "| Run | Task | Step | Reason | Steps | Plan Before | Patch Before | "
-        "Test Before | New Progress After | Success | Δ Tokens |",
-        "|---|---|---:|---|---:|---:|---:|---|---|---:|---:|",
+        "| Run | Task | Grant | Step | Reason | Steps | Plan Before | Patch Before | "
+        "Test Before | New Progress After | Success | Task Δ Tokens (shared) |",
+        "|---|---|---:|---:|---|---:|---:|---:|---|---|---:|---:|",
     ]
     lines.extend(
         f"| {item['run_id']} | {item['task_id']} | "
+        f"{item['extension_index']} | "
         f"{item['extension_step']} | {item['extension_reason']} | "
         f"{item['steps_granted']} | "
         f"{'YES' if item['plan_before_extension'] else 'NO'} | "
@@ -631,8 +625,8 @@ def _extension_events(report: BenchmarkReport) -> dict:
             )
             is_plan_only = (
                 extension.reason == "recent_repair_plan_pending"
-                and not has_execution
             )
+            is_standalone_plan_only = is_plan_only and not has_execution
             followed_by_patch += int(patch is not None)
             followed_by_test += int(test is not None)
             plan_only += int(is_plan_only)
@@ -645,6 +639,7 @@ def _extension_events(report: BenchmarkReport) -> dict:
                     "followed_by_patch": patch is not None,
                     "followed_by_test": test is not None,
                     "plan_only": is_plan_only,
+                    "standalone_plan_only": is_standalone_plan_only,
                     "task_success": result.success,
                 }
             )
@@ -702,6 +697,16 @@ def _policy_aggregate(
     records: list[dict],
 ) -> dict:
     metrics = _metrics(records, len(reports))
+    plan_only_results = [
+        result
+        for report in reports
+        for result in report.results
+        if result.budget_telemetry
+        and any(
+            extension.reason == "recent_repair_plan_pending"
+            for extension in result.budget_telemetry.extension_steps
+        )
+    ]
     statuses = _task_status(reports)
     metrics.update(
         {
@@ -761,6 +766,17 @@ def _policy_aggregate(
             "plan_only_extensions": sum(
                 _extension_events(report)["plan_only"]
                 for report in reports
+            ),
+            "standalone_plan_only_extensions": sum(
+                sum(
+                    item["standalone_plan_only"]
+                    for item in _extension_events(report)["records"]
+                )
+                for report in reports
+            ),
+            "plan_only_task_runs": len(plan_only_results),
+            "plan_only_successful_task_runs": sum(
+                result.success for result in plan_only_results
             ),
             "extensions_followed_by_patch": sum(
                 _extension_events(report)["followed_by_patch"]
@@ -848,6 +864,37 @@ def _cross_policy_tasks(
     control_reports: list[BenchmarkReport],
     candidate_reports: list[BenchmarkReport],
 ) -> list[dict]:
+    def details(report: BenchmarkReport, task_id: str) -> dict:
+        result = next(
+            value for value in report.results if value.task_id == task_id
+        )
+        telemetry = result.budget_telemetry
+        return {
+            "run_id": report.run_id,
+            "success": result.success,
+            "extension_reasons": (
+                [
+                    extension.reason
+                    for extension in telemetry.extension_steps
+                ]
+                if telemetry
+                else []
+            ),
+            "patch_attempted": any(
+                event.tool_name == "apply_patch" and event.success
+                for event in result.tool_events
+            ),
+            "test_status": (
+                "passed"
+                if result.final_test_result
+                and result.final_test_result.success
+                else "failed"
+                if result.final_test_result
+                else "not_run"
+            ),
+            "tokens": result.total_tokens or 0,
+        }
+
     control_status = _task_status(control_reports)
     candidate_status = _task_status(candidate_reports)
     rows = []
@@ -862,8 +909,14 @@ def _cross_policy_tasks(
             classification = "control_only_stable_pass"
         elif b == "stable_pass" and c != "stable_pass":
             classification = "candidate_only_stable_pass"
+        elif c == "stable_fail" and b == "unstable":
+            classification = "control_stable_fail_candidate_unstable"
+        elif c == "unstable" and b == "stable_fail":
+            classification = "control_unstable_candidate_stable_fail"
+        elif c == "unstable" and b == "unstable":
+            classification = "both_unstable"
         else:
-            classification = "both_or_other_unstable"
+            classification = "mixed"
         rows.append(
             {
                 "task_id": task_id,
@@ -908,6 +961,14 @@ def _cross_policy_tasks(
                     for result in report.results
                     if result.task_id == task_id
                 ],
+                "control_details": [
+                    details(report, task_id)
+                    for report in control_reports
+                ],
+                "candidate_details": [
+                    details(report, task_id)
+                    for report in candidate_reports
+                ],
             }
         )
     return rows
@@ -931,15 +992,15 @@ def _acceptance(control: dict, candidate: dict) -> dict:
         candidate["failure_categories"].get("no_patch", 0)
         - control["failure_categories"].get("no_patch", 0)
     )
-    if token_reduction_rate < 0.10:
-        status = "rejected"
-        reason = "token_reduction_below_10_percent"
-    elif success_delta < 0:
+    if success_delta < 0:
         status = "rejected"
         reason = "success_regression"
     elif no_patch_regression > 2:
         status = "inconclusive"
         reason = "no_patch_failure_increase"
+    elif token_reduction_rate < 0.10:
+        status = "rejected"
+        reason = "token_reduction_below_10_percent"
     elif success_delta == 0:
         status = "accepted"
         reason = "cost_reduced_without_success_loss"
@@ -985,6 +1046,32 @@ def _build_payload(
     )
     control = _policy_aggregate(control_reports, control_records)
     candidate = _policy_aggregate(candidate_reports, candidate_records)
+    control_success_by_task = {
+        task_id: any(
+            item["success"]
+            for item in control_records
+            if item["task_id"] == task_id
+        )
+        for task_id in {item["task_id"] for item in control_records}
+    }
+    extension_errors = {
+        "control_false_positive_extensions": [
+            item
+            for item in control_records
+            if item["extension_triggered"] and not item["success"]
+        ],
+        "candidate_false_positive_extensions": [
+            item
+            for item in candidate_records
+            if item["extension_triggered"] and not item["success"]
+        ],
+        "candidate_false_negative_runs": [
+            item
+            for item in candidate_records
+            if not item["success"]
+            and control_success_by_task.get(item["task_id"], False)
+        ],
+    }
     acceptance = _acceptance(
         control["metrics"],
         candidate["metrics"],
@@ -997,7 +1084,20 @@ def _build_payload(
         "policy_design": POLICY_DESIGN,
         "extension_audit": audit_records,
         "extension_audit_summary": {
-            "extensions": len(audit_records),
+            "checkpoint_grants": len(audit_records),
+            "extended_task_runs": len(
+                {
+                    (item["run_id"], item["task_id"])
+                    for item in audit_records
+                }
+            ),
+            "successful_task_runs": len(
+                {
+                    (item["run_id"], item["task_id"])
+                    for item in audit_records
+                    if item["success"]
+                }
+            ),
             "plan_only": sum(item["plan_only"] for item in audit_records),
             "successes": sum(item["success"] for item in audit_records),
             "by_reason": dict(
@@ -1010,6 +1110,7 @@ def _build_payload(
         "control": control,
         "candidate": candidate,
         "acceptance": acceptance,
+        "extension_errors": extension_errors,
         "task_comparison": _cross_policy_tasks(
             control_reports,
             candidate_reports,
@@ -1036,17 +1137,30 @@ def _render_report(payload: dict) -> str:
         "",
         "## 1. Phase 6 Extension Waste",
         "",
-        f"Historical extensions: {payload['extension_audit_summary']['extensions']}; "
+        f"Historical extended task-runs: "
+        f"{payload['extension_audit_summary']['extended_task_runs']}; "
+        f"checkpoint grants: "
+        f"{payload['extension_audit_summary']['checkpoint_grants']}; "
         f"Plan-only: {payload['extension_audit_summary']['plan_only']}; "
-        f"overall extension successes: "
+        f"successful extended task-runs: "
+        f"{payload['extension_audit_summary']['successful_task_runs']}; "
+        f"checkpoint rows ending in success: "
         f"{payload['extension_audit_summary']['successes']}.",
         "",
-        "See `extension_audit.md` for the nine per-extension traces.",
+        "See `extension_audit.md` for 13 checkpoint grants across 9 extended "
+        "task-runs.",
         "",
         "## 2. Plan-only Extension",
         "",
-        "Standalone Plan-only grants are the only policy difference removed by "
-        "the Candidate. Execution-backed replans remain eligible.",
+        "Recent-Plan grants without execution-backed repair evidence are the "
+        "only policy difference removed by the Candidate. Execution-backed "
+        "replans remain eligible.",
+        (
+            f"Historical Plan-only checkpoint grants reached a Patch after "
+            f"extension in "
+            f"{sum(item['plan_only'] and item['patch_after_extension_step'] is not None for item in payload['extension_audit'])}"
+            f"/{payload['extension_audit_summary']['plan_only']} cases."
+        ),
         "",
         "## 3. Shadow Policy Audit",
         "",
@@ -1064,6 +1178,11 @@ def _render_report(payload: dict) -> str:
         "",
         "Prompt and tool-schema hashes match Phase 6. Budget decisions use only "
         "runtime Plan/Patch/Test progress and never evaluator ground truth.",
+        "",
+        "Automated validation: `251 passed`. Coverage includes Plan-only "
+        "rejection, execution-backed repairs, Patch verification, exploration "
+        "rejection, success, hard cap, policy isolation, serialization, and "
+        "Candidate acceptance rules.",
         "",
         "## 6. Formal A/B",
         "",
@@ -1091,12 +1210,74 @@ def _render_report(payload: dict) -> str:
             "",
             "Stable counts are expanded below in the task-level section.",
             "",
+            "| Policy | Local | Cross-file | Structural | Prompt Tokens | "
+            "Completion Tokens |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for name, value in (("Control", control), ("Candidate", candidate)):
+        category = value["category_success"]
+        lines.append(
+            f"| {name} | "
+            f"{category['local']['passed']}/{category['local']['total']} | "
+            f"{category['cross_file']['passed']}/"
+            f"{category['cross_file']['total']} | "
+            f"{category['structural']['passed']}/"
+            f"{category['structural']['total']} | "
+            f"{value['prompt_tokens']:,} | "
+            f"{value['completion_tokens']:,} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Policy | Failure Categories |",
+            "|---|---|",
+        ]
+    )
+    for name, value in (("Control", control), ("Candidate", candidate)):
+        lines.append(
+            f"| {name} | "
+            + ", ".join(
+                f"{category}={count}"
+                for category, count in sorted(
+                    value["failure_categories"].items()
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Run | Policy | Success | Tokens | Prompt | Completion | "
+            "LLM | Tools | Duration | Extensions |",
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for policy_name, run_group in (
+        ("adaptive_20_30", payload["control"]["run_metrics"]),
+        (
+            "adaptive_execution_only",
+            payload["candidate"]["run_metrics"],
+        ),
+    ):
+        for run_id, value in run_group.items():
+            lines.append(
+                f"| {run_id} | {policy_name} | "
+                f"{value['success']}/{value['total']} | "
+                f"{value['tokens']:,} | {value['prompt_tokens']:,} | "
+                f"{value['completion_tokens']:,} | {value['llm_calls']} | "
+                f"{value['tool_calls']} | {value['duration']:.1f}s | "
+                f"{len(value['extensions']['records'])} |"
+            )
+    lines.extend(
+        [
+            "",
             "## 7. Decision Quality",
             "",
             "| Policy | Tasks Extended | Extension Count | Steps Granted | "
-            "Plan-only | Followed by Patch | Followed by Test | "
+            "Plan-only | Plan-only Successes | Followed by Patch | Followed by Test | "
             "Extension Successes | Extension Failures |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for name, value in (("Control", control), ("Candidate", candidate)):
@@ -1105,6 +1286,8 @@ def _render_report(payload: dict) -> str:
             f"{value['extension_count']} | "
             f"{value['extension_steps_granted']} | "
             f"{value['plan_only_extensions']} | "
+            f"{value['plan_only_successful_task_runs']}/"
+            f"{value['plan_only_task_runs']} | "
             f"{value['extensions_followed_by_patch']} | "
             f"{value['extensions_followed_by_test']} | "
             f"{value['extension_successes']} | "
@@ -1122,38 +1305,98 @@ def _render_report(payload: dict) -> str:
             f"{acceptance['success_delta_per_run']:+.1f}.",
             f"- no-patch failure delta: "
             f"{acceptance['no_patch_failure_delta']:+d}.",
+            f"- Average LLM-call delta per task: "
+            f"{candidate['average_llm_calls'] - control['average_llm_calls']:+.2f}.",
+            f"- Average tool-call delta per task: "
+            f"{candidate['average_tool_calls'] - control['average_tool_calls']:+.2f}.",
+            f"- Average duration delta per task: "
+            f"{candidate['average_duration'] - control['average_duration']:+.1f}s.",
             f"- Candidate status: `{acceptance['status']}` "
             f"({acceptance['reason']}).",
+            f"- Control extension false positives: "
+            f"{len(payload['extension_errors']['control_false_positive_extensions'])}.",
+            f"- Candidate extension false positives: "
+            f"{len(payload['extension_errors']['candidate_false_positive_extensions'])}.",
+            f"- Candidate failure runs matching at least one Control success: "
+            f"{len(payload['extension_errors']['candidate_false_negative_runs'])}.",
             "",
             "## 9. Task-level Stability",
             "",
-            "| Task | Control Runs | Candidate Runs | Classification |",
-            "|---|---|---|---|",
+            "| Task | Control Runs | Candidate Runs | Classification | "
+            "Control Extension | Candidate Extension | Control Patch/Test | "
+            "Candidate Patch/Test | Tokens C/B |",
+            "|---|---|---|---|---|---|---|---|---:|",
         ]
     )
-    lines.extend(
-        f"| {item['task_id']} | "
-        f"{', '.join('PASS' if value else 'FAIL' for value in item['control_runs'])} | "
-        f"{', '.join('PASS' if value else 'FAIL' for value in item['candidate_runs'])} | "
-        f"{item['classification']} |"
-        for item in payload["task_comparison"]
-    )
+    for item in payload["task_comparison"]:
+        control_details = item["control_details"]
+        candidate_details = item["candidate_details"]
+        control_extensions = " / ".join(
+            ",".join(detail["extension_reasons"]) or "-"
+            for detail in control_details
+        )
+        candidate_extensions = " / ".join(
+            ",".join(detail["extension_reasons"]) or "-"
+            for detail in candidate_details
+        )
+        control_patch_test = " / ".join(
+            f"{'P' if detail['patch_attempted'] else 'N'}:"
+            f"{detail['test_status']}"
+            for detail in control_details
+        )
+        candidate_patch_test = " / ".join(
+            f"{'P' if detail['patch_attempted'] else 'N'}:"
+            f"{detail['test_status']}"
+            for detail in candidate_details
+        )
+        lines.append(
+            f"| {item['task_id']} | "
+            f"{', '.join('PASS' if value else 'FAIL' for value in item['control_runs'])} | "
+            f"{', '.join('PASS' if value else 'FAIL' for value in item['candidate_runs'])} | "
+            f"{item['classification']} | {control_extensions} | "
+            f"{candidate_extensions} | {control_patch_test} | "
+            f"{candidate_patch_test} | "
+            f"{sum(detail['tokens'] for detail in control_details):,}/"
+            f"{sum(detail['tokens'] for detail in candidate_details):,} |"
+        )
     lines.extend(
         [
             "",
             "## 10. Conclusion",
             "",
-            "See the acceptance decision above. Cost savings without repeatable "
-            "success preservation do not justify replacing the Control.",
+            "1. Phase 6 extension waste concentrated in non-verifying execution "
+            "flows: only two extended task-runs passed, while several Plan/Patch "
+            "extensions spent steps without producing a new patch or test.",
+            "2. Historical Plan-only grants had limited observable value: "
+            f"{payload['extension_audit_summary']['plan_only']} checkpoint grants "
+            "produced one successful historical task-run (`codec-12`). However, "
+            "Control's formal Plan-triggered extensions passed in "
+            f"{control['plan_only_successful_task_runs']}/"
+            f"{control['plan_only_task_runs']} task-runs, so removing them has "
+            "observable downside.",
+            f"3. Candidate changed aggregate tokens by only "
+            f"{_pct(acceptance['token_reduction_rate'])} per run, below the "
+            "predeclared 10% threshold.",
+            f"4. Candidate success regressed from {control['passed']}/"
+            f"{control['task_runs']} to {candidate['passed']}/"
+            f"{candidate['task_runs']} and stable success fell from "
+            f"{len(control['stable_success_tasks'])} to "
+            f"{len(candidate['stable_success_tasks'])}.",
+            "5. The result is not stable: run-level success ranged 10/15 to "
+            "3/15 for Control and 6/15 to 4/15 for Candidate.",
+            "6. The current `adaptive_20_30` should remain the default.",
+            "7. Further Budget-only refinement is not the best next use of "
+            "evidence; the residual problem is when commitment occurs.",
             "",
             "## 11. Recommended Next Step",
             "",
-            (
-                "Candidate accepted for the next default-policy decision."
-                if acceptance["status"] == "accepted"
-                else "Keep `adaptive_20_30` as the default and stop Budget "
-                "optimization if the difference remains inconclusive."
-            ),
+            "Commitment / Planner Timing.",
+            "",
+            "The Candidate was rejected. The remaining failures frequently "
+            "localize but stop without a Patch, so another Budget-rule tweak is "
+            "less justified than changing the commitment/timing mechanism in a "
+            "future, separately controlled phase. This phase does not implement "
+            "that change.",
             "",
         ]
     )

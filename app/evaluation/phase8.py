@@ -609,7 +609,9 @@ def run_phase8(
     holdout_manifest = HOLDOUT_TASKS_FILE.parent / "benchmark_manifest.json"
     if not holdout_selection.is_file():
         raise RuntimeError("Missing frozen holdout selection audit")
-    shutil.copyfile(holdout_selection, phase_dir / "holdout_candidate_selection.json")
+    selection_target = phase_dir / "holdout_candidate_selection.json"
+    if holdout_selection.resolve() != selection_target.resolve():
+        shutil.copyfile(holdout_selection, selection_target)
     shutil.copyfile(holdout_manifest, phase_dir / "holdout_manifest.json")
 
     v1_reports = {False: [], True: []}
